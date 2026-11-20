@@ -1,0 +1,114 @@
+/* ── RIP MODE — dialer components on the template's tokens ──────────────
+   The template above supplies the shell, buttons, cards, inputs, tables,
+   nav, topbar and account menu. These rules cover only what the template
+   does not: the approved black login, and the dialer-specific pieces
+   (session stats, mic bar, pipeline columns, Cal.com picker, chat).
+   Green is kept only for CALL / success (template base --green #34d399),
+   exactly as the approved dialer design had it. */
+
+.hidden{display:none!important}
+.screen{min-height:100vh}
+button{cursor:pointer}
+input,select,textarea{font-family:inherit}
+
+/* ---------- login: dark centred card (2026-11-20) ----------
+   Layout/style from the reference: dark page, centred card, small orb
+   logo top-centre, "Yooo, welcome back!", rounded dark fields, full-width
+   white pill Sign in. Rules are scoped under #login-screen so they win
+   over the template's own .login-* rules. */
+#login-screen{display:flex;min-height:100vh;background:#080808;align-items:center;justify-content:center;padding:24px 16px}
+.login-page{width:100%;max-width:560px}
+.login-card{background:#111;border:1px solid #292929;border-radius:20px;padding:36px 32px 28px;text-align:center;box-shadow:0 24px 80px rgba(0,0,0,.6)}
+#login-screen .login-orb{width:56px;height:56px;margin:0 auto 20px;background:#262626;border:1px solid #343434;border-radius:14px;display:flex;align-items:center;justify-content:center}
+#login-screen .login-orb svg{width:34px;height:34px}
+#login-screen .login-brand{font-size:11px;font-weight:700;letter-spacing:.22em;color:#8a8a8a;text-transform:uppercase;margin:0 0 14px}
+#login-screen .login-card h1{font-size:30px;font-weight:600;letter-spacing:-.01em;margin:0 0 6px;color:#f5f5f5}
+#login-screen .login-sub{color:#9a9a9a;margin:0 0 24px;font-size:14px}
+#login-screen .login-sub b{color:#e5e5e5;font-weight:600}
+#login-screen #login-form{text-align:left}
+#login-screen .login-field{display:block;font-size:13px;color:#d3d3d3;margin-bottom:14px}
+#login-screen .login-field>span:first-child{display:block;margin-bottom:6px}
+#login-screen .login-field input{width:100%;box-sizing:border-box;background:#1b1b1b;border:1px solid #2e2e2e;border-radius:12px;color:#fff;padding:13px 14px;font-size:16px;letter-spacing:.04em}
+#login-screen .login-field input:focus{outline:none;border-color:#666}
+#login-screen .login-field input::placeholder{color:#777}
+#login-screen .login-field input:-webkit-autofill{-webkit-box-shadow:0 0 0 1000px #1b1b1b inset!important;-webkit-text-fill-color:#fff!important;caret-color:#fff;transition:background-color 9999s ease-in-out 0s}
+#login-screen .field-hint{display:block;font-size:11px;line-height:1.5;color:#777;margin-top:8px}
+#login-screen #confirm-wrap{margin-top:0}
+#login-screen .login-primary{width:100%;background:#fff;border:1px solid #fff;color:#111;border-radius:999px;padding:14px;font-size:15px;font-weight:700;margin-top:6px}
+#login-screen .login-primary:hover{background:#ebebeb}
+#login-screen .login-primary:disabled{opacity:.6}
+#login-screen .login-hint{color:#9a9a9a;font-size:13px;line-height:1.6;margin:14px 0 0;text-align:center}
+#login-screen .login-hint.small{font-size:12px}
+#login-screen .login-foot{color:#777;font-size:12px;margin:18px 0 0;text-align:center}
+.error{background:#2a0d0d;border:1px solid var(--red);color:#fca5a5;border-radius:10px;padding:10px 12px;font-size:14px;margin-bottom:16px;text-align:left}
+.ok-note{background:#0f2e1a;border:1px solid var(--green);color:#86efac;border-radius:10px;padding:10px 12px;font-size:14px;margin-bottom:16px;text-align:left}
+
+/* ---------- dialer pieces ---------- */
+.grid2{display:grid;grid-template-columns:1fr 1fr;gap:16px}
+@media(max-width:820px){.grid2{grid-template-columns:1fr}}
+.stat-boxes{display:grid;grid-template-columns:repeat(3,1fr);gap:10px;margin:14px 0}
+.stat-box{background:var(--panel-2);border:1px solid var(--line);border-radius:12px;padding:12px;text-align:center}
+.stat-box .num{font-size:26px;font-weight:800}
+.stat-box .lbl{font-size:12px;color:var(--muted);text-transform:uppercase;letter-spacing:.06em}
+.dispo-row{display:flex;flex-wrap:wrap;gap:8px;margin:10px 0}
+.section-title{font-size:13px;font-weight:700;letter-spacing:.1em;text-transform:uppercase;color:var(--muted);margin:18px 0 8px}
+.lead-line{font-size:15px;line-height:1.6}
+.lead-line b{font-size:18px}
+.mic-wrap{display:flex;align-items:center;gap:10px;margin:10px 0}
+.mic-bar{flex:1;height:10px;background:var(--panel-2);border-radius:99px;overflow:hidden}
+.mic-fill{height:100%;width:0%;background:#34d399;transition:width .1s}
+.big-call{width:100%;padding:16px;font-size:19px;font-weight:800;border-radius:12px;border:0;background:#34d399;color:#04150a;margin-top:10px;cursor:pointer}
+.big-call:disabled{opacity:.5}
+.ready-row{display:flex;gap:10px;align-items:center;margin-bottom:10px}
+.pill{border:1px solid var(--line);border-radius:99px;padding:6px 12px;font-size:13px;color:var(--muted)}
+.pill.on{border-color:#34d399;color:#34d399}
+.btn-green{background:#34d399!important;border-color:#34d399!important;color:#04150a!important}
+.btn-danger{background:transparent!important;border-color:var(--red)!important;color:#fca5a5!important}
+textarea.input{min-height:80px;resize:vertical}
+.field{margin-bottom:12px}
+.field label{display:block;font-size:13px;color:var(--muted);margin-bottom:5px}
+.stage-col{display:flex;flex-direction:column;gap:10px;min-width:200px}
+.pipeline{display:flex;gap:12px;overflow-x:auto;padding-bottom:8px}
+.stage-head{font-weight:700;font-size:13px;text-transform:uppercase;letter-spacing:.06em;color:var(--muted)}
+.pcard{background:var(--panel);border:1px solid var(--line);border-radius:12px;padding:12px}
+.pcard b{display:block;margin-bottom:4px}
+.pcard .meta{font-size:13px;color:var(--muted)}
+.cal-layout{display:grid;grid-template-columns:280px 1fr;gap:16px}
+@media(max-width:820px){.cal-layout{grid-template-columns:1fr}}
+.event-type{padding:12px;border:1px solid var(--line);border-radius:12px;margin-bottom:10px;cursor:pointer;background:var(--panel)}
+.event-type.sel{border-color:#fff;background:#1a1a1a}
+.event-type b{display:block}
+.event-type span{font-size:13px;color:var(--muted)}
+.days{display:flex;flex-wrap:wrap;gap:8px;margin:12px 0}
+.day{border:1px solid var(--line);border-radius:10px;padding:10px 12px;background:var(--panel);text-align:center;min-width:64px;color:var(--text);cursor:pointer}
+.day.sel{border-color:#fff;background:#1a1a1a}
+.day b{display:block;font-size:16px}
+.day span{font-size:12px;color:var(--muted)}
+.slots{display:flex;flex-wrap:wrap;gap:8px;margin:12px 0}
+.slot{border:1px solid var(--line);border-radius:10px;padding:10px 14px;background:var(--panel);color:var(--text);cursor:pointer}
+.slot.sel{border-color:#fff;background:#1a1a1a}
+.chat-thread{display:flex;flex-direction:column;gap:10px}
+.msg{max-width:80%;padding:10px 14px;border-radius:14px;font-size:14px;line-height:1.5}
+.msg.in{background:var(--panel-2);align-self:flex-start}
+.msg.out{background:#fff;color:#000;align-self:flex-end}
+.msg .mmeta{font-size:11px;opacity:.7;margin-top:4px}
+.chat-input{display:flex;gap:8px;margin-top:14px}
+.chat-input input{flex:1}
+.conv-list{display:flex;flex-direction:column;gap:8px}
+.conv-item{display:flex;justify-content:space-between;gap:10px;padding:12px;border:1px solid var(--line);border-radius:12px;background:var(--panel);cursor:pointer;text-align:left;color:var(--text);width:100%}
+.conv-item:hover{border-color:var(--muted)}
+.badge{display:inline-block;font-size:11px;font-weight:700;padding:3px 8px;border-radius:99px;background:var(--panel-2);border:1px solid var(--line);color:var(--muted)}
+.badge.green{color:#34d399;border-color:#34d399}
+.badge.amber{color:#f59e0b;border-color:#f59e0b}
+.notice{font-size:13px;color:var(--muted);line-height:1.6}
+.kv{display:flex;justify-content:space-between;gap:10px;padding:10px 0;border-bottom:1px solid var(--line);font-size:14px}
+.kv:last-child{border-bottom:0}
+.rowlink{cursor:pointer}
+.rowlink:hover td{background:var(--panel-2)}
+
+/* small screens: card tightens up */
+@media(max-width:820px){
+  #login-screen{padding:16px 12px}
+  .login-card{padding:28px 20px}
+  .login-card h1{font-size:26px}
+}

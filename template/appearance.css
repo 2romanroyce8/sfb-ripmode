@@ -1,0 +1,42 @@
+body.sfb-hq .appearance-toggle {
+  flex: none;
+  min-width: 36px;
+  min-height: 36px;
+}
+
+body.sfb-hq .orb {
+  object-fit: cover;
+  background: #000;
+}
+
+body.sfb-hq .banner-art img {
+  mix-blend-mode: screen;
+}
+
+html:has(.shell[data-appearance="light"]) body.sfb-hq .shell {
+  --orange-ink: #963d10;
+  color-scheme: light;
+}
+
+html:has(.shell[data-appearance="light"]) body.sfb-hq.sfb-staff .shell {
+  --orange: #242424;
+  --orange-2: #373737;
+  --orange-ink: #333;
+}
+
+html:has(.shell[data-appearance="light"]) body.sfb-hq .shell .orb,
+html:has(.shell[data-appearance="light"]) body.sfb-hq .shell .banner-art img {
+  filter: invert(1) contrast(1.12);
+  mix-blend-mode: multiply;
+}
+
+html:has(.shell[data-appearance="light"]) body.sfb-hq .shell .btn.btn--primary,
+html:has(.shell[data-appearance="light"]) body.sfb-hq .shell .nav .nav-link[aria-current="page"] {
+  background: #242424;
+  border-color: #242424;
+  color: #fff;
+}
+
+html:has(.shell[data-appearance="light"]) body.sfb-hq .shell .nav-active-dot {
+  background: #fff;
+}

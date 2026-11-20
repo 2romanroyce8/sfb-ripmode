@@ -1,0 +1,1 @@
+{"name":"sfb-staff-ui-template","private":true,"scripts":{"dev":"next dev -H 127.0.0.1","build":"next build"},"dependencies":{"next":"15.5.28","react":"19.1.2","react-dom":"19.1.2","lucide-react":"0.468.0"},"devDependencies":{"typescript":"^5.7.0","@types/react":"^19.0.0","@types/node":"^22.0.0"}}

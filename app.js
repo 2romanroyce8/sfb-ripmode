@@ -11,7 +11,18 @@ const GV_NUMBER = "(213) 495-3536";
 const CAL_LINK = "https://cal.com/roman-royce/30min";
 const ALLOWED_USERS = ["romanroyce", "loganwells", "braylengarrett"];
 
-let token = localStorage.getItem("rip_token") || "";
+/* Token storage: "Remember me" (checked) = 30-day localStorage session;
+   unchecked = this browser session only (sessionStorage). */
+const TOKEN_KEY = "rip_token";
+function readToken() { return localStorage.getItem(TOKEN_KEY) || sessionStorage.getItem(TOKEN_KEY) || ""; }
+function saveToken(t) {
+  const remember = document.getElementById("login-remember");
+  const keep = !remember || remember.checked;
+  if (keep) { localStorage.setItem(TOKEN_KEY, t); sessionStorage.removeItem(TOKEN_KEY); }
+  else { sessionStorage.setItem(TOKEN_KEY, t); localStorage.removeItem(TOKEN_KEY); }
+}
+function clearToken() { localStorage.removeItem(TOKEN_KEY); sessionStorage.removeItem(TOKEN_KEY); }
+let token = readToken();
 let me = "";
 let state = null;         // shared state from KV: leads, callLogs, conversations, meetings, stats
 let currentTab = "rip";
@@ -45,10 +56,27 @@ function showLogin(msg, isOk) {
   if (msg) { err.textContent = msg; err.className = isOk ? "ok-note" : "error"; }
   else err.className = "hidden";
 }
+const DISPLAY_NAMES = {romanroyce: "Roman Royce", loganwells: "Logan Wells", braylengarrett: "Braylen Garrett"};
+const INITIALS = {romanroyce: "RR", loganwells: "LW", braylengarrett: "BG"};
+function roleFor(u) { return u === "romanroyce" ? "owner" : "staff"; }
+
 function showDashboard() {
   $("#login-screen").classList.add("hidden");
   $("#dashboard").classList.remove("hidden");
-  $("#whoami").textContent = "@" + me;
+  const role = roleFor(me);
+  const initials = INITIALS[me] || me.slice(0, 2).toUpperCase();
+  $("#sidebar-avatar").textContent = initials;
+  $("#sidebar-name").textContent = "@" + me;
+  $("#sidebar-role").textContent = role;
+  $("#account-avatar").textContent = initials;
+  $("#account-popover-avatar").textContent = initials;
+  $("#account-popover-name").textContent = DISPLAY_NAMES[me] || me;
+  $("#account-popover-user").textContent = "@" + me;
+  $("#role-chip").textContent = role;
+  const isOwner = role === "owner";
+  $("#manage-users-link").classList.toggle("hidden", !isOwner);
+  $("#create-workspace").classList.toggle("hidden", !isOwner);
+  updateNav();
 }
 
 async function checkSession() {
@@ -59,50 +87,55 @@ async function checkSession() {
     await loadState();
     showDashboard();
     render();
-  } catch (e) { token = ""; localStorage.removeItem("rip_token"); showLogin(); }
+  } catch (e) { token = ""; clearToken(); showLogin(); }
 }
 
 async function doLogin() {
+  if (doLogin.busy) return; // form submit + Enter can double-fire — one attempt at a time
+  doLogin.busy = true;
   const username = $("#login-username").value.trim().toLowerCase();
-  const password = $("#login-password").value;
+  const passcode = $("#login-passcode").value;
   const confirm = $("#login-confirm").value;
   const err = $("#login-error");
+  if (username.includes("@")) {
+    err.textContent = "Use your username, not your email — romanroyce, loganwells, or braylengarrett.";
+    err.className = "error"; return;
+  }
   if (!ALLOWED_USERS.includes(username)) {
     err.textContent = "That username is not on the team. Only romanroyce, loganwells and braylengarrett can sign in.";
     err.className = "error"; return;
   }
-  if (!password) { err.textContent = "Enter a password."; err.className = "error"; return; }
+  if (!/^\d{4}$/.test(passcode)) { err.textContent = "Enter a 4-digit passcode."; err.className = "error"; return; }
   $("#login-btn").disabled = true;
   try {
     const status = await api("/auth/check", "POST", {username});
     if (!status.hasAccount) {
       // first sign-in = signup
-      if (password.length < 8) throw new Error("Password must be at least 8 characters.");
-      if (password !== confirm) throw new Error("Passwords do not match. Type the same password twice.");
-      const r = await api("/auth/signup", "POST", {username, password});
-      token = r.token; localStorage.setItem("rip_token", token); me = username;
+      if (passcode !== confirm) throw new Error("Passcodes do not match. Type the same 4 digits twice.");
+      const r = await api("/auth/signup", "POST", {username, password: passcode});
+      token = r.token; saveToken(token); me = username;
       await loadState(); showDashboard(); render();
-      showToast("Account created for @" + username + ". That password is saved — use it next time.");
+      showToast("Account created for @" + username + ". That 4-digit passcode is saved — use it next time.");
     } else {
-      const r = await api("/auth/login", "POST", {username, password});
-      token = r.token; localStorage.setItem("rip_token", token); me = username;
+      const r = await api("/auth/login", "POST", {username, password: passcode});
+      token = r.token; saveToken(token); me = username;
       await loadState(); showDashboard(); render();
     }
   } catch (e) {
     err.textContent = e.message || "Sign-in failed.";
     err.className = "error";
-    // if account does not exist yet, show the confirm field so first sign-in can set a password
+    // if account does not exist yet, show the confirm field so first sign-in can set a passcode
     try {
       const s = await api("/auth/check", "POST", {username});
       if (!s.hasAccount) $("#confirm-wrap").classList.remove("hidden");
     } catch (_) {}
-  } finally { $("#login-btn").disabled = false; }
+  } finally { $("#login-btn").disabled = false; doLogin.busy = false; }
 }
 
 function logout() {
   if (token) api("/auth/logout", "POST", {}).catch(() => {});
-  token = ""; me = ""; localStorage.removeItem("rip_token");
-  $("#login-password").value = ""; $("#login-confirm").value = "";
+  token = ""; me = ""; clearToken();
+  $("#login-passcode").value = ""; $("#login-confirm").value = "";
   $("#confirm-wrap").classList.add("hidden");
   showLogin();
 }
@@ -129,25 +162,142 @@ function openGoogleVoice(kind, lead) {
   window.open(url, "_blank");
 }
 
-/* ---------- tabs ---------- */
-document.querySelectorAll(".tab").forEach((b) => {
-  b.addEventListener("click", () => {
-    document.querySelectorAll(".tab").forEach((x) => x.classList.remove("active"));
-    b.classList.add("active");
-    currentTab = b.dataset.tab;
-    render();
+/* ---------- shell: template nav / topbar / account menu ---------- */
+const TAB_META = {
+  rip: ["RIP MODE", "Dialer — calling from Google Voice (213) 495-3536. Google Voice has no API, so Call opens Google Voice with this lead's number ready — you talk, then log the outcome here."],
+  leads: ["Leads", "New leads start in the Pipeline at \"New\"."],
+  pipeline: ["Client Pipeline", "5 stages. Move a card with the arrows or the stage picker."],
+  calendar: ["Calendar", "Cal.com — pick an event type, a day, and a time. Booking opens your real Cal.com link: https://cal.com/roman-royce/30min"],
+  calllog: ["Call Log", "Every call, mirrored as a conversation. Tap a lead to open its chat thread."],
+  connections: ["Connections", "Honest status — nothing here is marked connected unless it was verified."],
+};
+function updateNav() {
+  document.querySelectorAll(".nav-link").forEach((b) => {
+    const on = b.dataset.tab === currentTab;
+    if (on) b.setAttribute("aria-current", "page"); else b.removeAttribute("aria-current");
+    let dot = b.querySelector(".nav-active-dot");
+    if (on && !dot) { dot = document.createElement("span"); dot.className = "nav-active-dot"; b.appendChild(dot); }
+    if (!on && dot) dot.remove();
   });
+  const meta = TAB_META[currentTab] || TAB_META.rip;
+  const crumb = $("#crumb-title");
+  if (crumb) crumb.textContent = meta[0];
+}
+function onNavigate(next) {
+  currentTab = next;
+  setMenuOpen(false);
+  window.scrollTo(0, 0);
+  updateNav();
+  render();
+}
+function setMenuOpen(open) {
+  const shell = $("#shell");
+  if (!shell) return;
+  shell.classList.toggle("shell--menu-open", open);
+  const btn = $("#mobile-menu");
+  if (btn) {
+    btn.setAttribute("aria-expanded", String(open));
+    btn.setAttribute("aria-label", open ? "Close navigation" : "Open navigation");
+  }
+}
+document.querySelectorAll(".nav-link").forEach((b) => {
+  b.addEventListener("click", () => onNavigate(b.dataset.tab));
+});
+
+/* Appearance toggle — exactly as the template: data-appearance on .shell,
+   persisted under the template's localStorage key. */
+function applyAppearance(a) {
+  const shell = $("#shell");
+  if (!shell) return;
+  shell.dataset.appearance = a;
+  $("#appearance-icon-sun").classList.toggle("hidden", a === "light");
+  $("#appearance-icon-moon").classList.toggle("hidden", a === "dark");
+  $("#appearance-toggle").setAttribute("aria-label", a === "dark" ? "Switch to light mode" : "Switch to dark mode");
+}
+function initAppearance() {
+  applyAppearance(localStorage.getItem("sfb-dashboard-appearance") === "light" ? "light" : "dark");
+}
+initAppearance();
+$("#appearance-toggle").addEventListener("click", () => {
+  const shell = $("#shell");
+  const next = shell.dataset.appearance === "dark" ? "light" : "dark";
+  localStorage.setItem("sfb-dashboard-appearance", next);
+  applyAppearance(next);
+});
+
+/* Mobile menu + scrim */
+$("#mobile-menu").addEventListener("click", () => {
+  setMenuOpen(!$("#shell").classList.contains("shell--menu-open"));
+});
+$("#sidebar-scrim").addEventListener("click", () => setMenuOpen(false));
+
+/* Notifications — the template's popover: "No notifications yet." */
+$("#notif-btn").addEventListener("click", (e) => {
+  e.stopPropagation();
+  const pop = $("#notif-pop");
+  const open = pop.classList.toggle("hidden") === false;
+  $("#notif-btn").setAttribute("aria-expanded", String(open));
+  if (open) $("#account-popover").classList.add("hidden");
+});
+
+/* Account menu — mirrors AccountMenu.tsx: outside click / Escape close it. */
+$("#account-trigger").addEventListener("click", (e) => {
+  e.stopPropagation();
+  const pop = $("#account-popover");
+  const open = pop.classList.toggle("hidden") === false;
+  $("#account-trigger").setAttribute("aria-expanded", String(open));
+  if (open) $("#notif-pop").classList.add("hidden");
+});
+document.addEventListener("pointerdown", (e) => {
+  const menu = $("#account-menu");
+  if (menu && !menu.contains(e.target)) $("#account-popover").classList.add("hidden");
+  const notifBtn = $("#notif-btn");
+  if (notifBtn && !notifBtn.contains(e.target)) $("#notif-pop").classList.add("hidden");
+});
+document.addEventListener("keydown", (e) => {
+  if (e.key === "Escape") {
+    $("#account-popover").classList.add("hidden");
+    $("#notif-pop").classList.add("hidden");
+    setMenuOpen(false);
+  }
+});
+$("#account-logout").addEventListener("click", () => {
+  $("#account-popover").classList.add("hidden");
+  logout();
+});
+$("#sidebar-logout").addEventListener("click", logout);
+document.querySelectorAll("[data-account-action]").forEach((b) => {
+  b.addEventListener("click", () => {
+    $("#account-popover").classList.add("hidden");
+    showToast("That setting is not part of the RIP MODE dialer.");
+  });
+});
+document.querySelectorAll("[data-workspace]").forEach((b) => {
+  b.addEventListener("click", () => {
+    $("#account-popover").classList.add("hidden");
+    showToast("Workspace switching is not part of the RIP MODE dialer — this workspace is Six Figure Blueprints.");
+  });
+});
+$("#create-workspace").addEventListener("click", () => {
+  $("#account-popover").classList.add("hidden");
+  showToast("Creating a new workspace is not part of the RIP MODE dialer.");
 });
 
 function render() {
   if (!state) return;
   const main = $("#main");
-  if (currentTab === "rip") main.innerHTML = renderRip();
-  else if (currentTab === "leads") main.innerHTML = renderLeads();
-  else if (currentTab === "pipeline") main.innerHTML = renderPipeline();
-  else if (currentTab === "calendar") main.innerHTML = renderCalendar();
-  else if (currentTab === "calllog") main.innerHTML = renderCallLog();
-  else if (currentTab === "connections") main.innerHTML = renderConnections();
+  const meta = TAB_META[currentTab] || TAB_META.rip;
+  const sub = currentTab === "leads"
+    ? `${(state.leads || []).length} leads. New leads start in the Pipeline at "New".`
+    : meta[1];
+  let body = "";
+  if (currentTab === "rip") body = renderRip();
+  else if (currentTab === "leads") body = renderLeads();
+  else if (currentTab === "pipeline") body = renderPipeline();
+  else if (currentTab === "calendar") body = renderCalendar();
+  else if (currentTab === "calllog") body = renderCallLog();
+  else if (currentTab === "connections") body = renderConnections();
+  main.innerHTML = `<div class="page-heading"><div><span class="eyebrow">YOUR WORKSPACE</span><h1>${esc(meta[0])}</h1><p>${esc(sub)}</p></div></div>` + body;
   bindTab();
 }
 
@@ -155,14 +305,12 @@ function render() {
 function renderRip() {
   const leads = state.leads || [];
   const lead = leads[ripIndex] || null;
-  if (!lead) return `<h2>RIP MODE</h2><p class="sub">No leads yet. Add one in the Leads tab.</p>`;
+  if (!lead) return `<div class="notice">No leads yet. Add one in the Leads tab.</div>`;
   const calls = callsFor(lead.id);
   const last = calls[calls.length - 1];
   const s = state.sessionStats || {};
   const script = (state.scripts && state.scripts[0]) || {title: "Roofer pitch", body: "Hi, this is Roman from SFB Connect — we build AI receptionists for roofers that answer every call, book jobs, and follow up automatically. Got 60 seconds for me to show you what that looks like for your company?"};
   return `
-  <h2>RIP MODE</h2>
-  <p class="sub">Dialer — calling from Google Voice ${esc(GV_NUMBER)}. Google Voice has no API, so Call opens Google Voice with this lead's number ready — you talk, then log the outcome here.</p>
   <div class="grid2">
     <div class="card">
       <div class="lead-line">
@@ -217,7 +365,7 @@ function renderRip() {
       </div>
       <div class="lead-line" style="font-size:20px;font-weight:700">${esc(lead.phone)}</div>
       <div class="ready-row" style="margin-top:12px">
-        <button class="btn btn-accent" id="ready-btn" style="flex:1;padding:12px">READY</button>
+        <button class="btn btn--primary" id="ready-btn" style="flex:1;padding:12px">READY</button>
         <span class="pill on" id="ready-state">Not ready</span>
       </div>
       <div style="display:flex;gap:8px">
@@ -230,7 +378,7 @@ function renderRip() {
       </div>
       <div id="script-box" class="hidden" style="margin-top:10px">
         <div class="field"><label>${esc(script.title)}</label>
-        <textarea readonly rows="5">${esc(script.body)}</textarea></div>
+        <textarea class="input" readonly rows="5">${esc(script.body)}</textarea></div>
         <p class="notice">Google Voice cannot auto-play a script or auto-drop a voicemail — read it yourself on the call, or record the voicemail in Google Voice.</p>
       </div>
       <div id="keypad-box" class="hidden" style="margin-top:10px">
@@ -332,22 +480,20 @@ function stopMic() {
 function renderLeads() {
   const leads = state.leads || [];
   return `
-  <h2>Leads</h2>
-  <p class="sub">${leads.length} leads. New leads start in the Pipeline at "New".</p>
   <div class="card" style="margin-bottom:16px">
     <div class="grid2">
-      <div class="field"><label>Business name</label><input id="nl-business" type="text" placeholder="Acme Roofing"></div>
-      <div class="field"><label>Phone</label><input id="nl-phone" type="tel" placeholder="(407) 555-0100"></div>
-      <div class="field"><label>Niche / what they do</label><input id="nl-niche" type="text" placeholder="Roofing"></div>
-      <div class="field"><label>Owner name (optional)</label><input id="nl-owner" type="text" placeholder=""></div>
-      <div class="field"><label>Email (optional)</label><input id="nl-email" type="email" placeholder=""></div>
-      <div class="field"><label>City (optional)</label><input id="nl-city" type="text" placeholder=""></div>
+      <div class="field"><label>Business name</label><input class="input" id="nl-business" type="text" placeholder="Acme Roofing"></div>
+      <div class="field"><label>Phone</label><input class="input" id="nl-phone" type="tel" placeholder="(407) 555-0100"></div>
+      <div class="field"><label>Niche / what they do</label><input class="input" id="nl-niche" type="text" placeholder="Roofing"></div>
+      <div class="field"><label>Owner name (optional)</label><input class="input" id="nl-owner" type="text" placeholder=""></div>
+      <div class="field"><label>Email (optional)</label><input class="input" id="nl-email" type="email" placeholder=""></div>
+      <div class="field"><label>City (optional)</label><input class="input" id="nl-city" type="text" placeholder=""></div>
     </div>
-    <button class="btn btn-accent" id="add-lead-btn">Add lead</button>
+    <button class="btn btn--primary" id="add-lead-btn">Add lead</button>
     <span style="margin:0 8px;color:var(--muted)">or</span>
-    <label class="btn" style="display:inline-block">Import CSV <input id="csv-input" type="file" accept=".csv" style="display:none"></label>
+    <label class="btn" style="display:inline-grid">Import CSV <input id="csv-input" type="file" accept=".csv" style="display:none"></label>
   </div>
-  <div class="card"><table>
+  <div class="card"><div class="table-wrap"><table>
     <thead><tr><th>#</th><th>Business</th><th>Niche</th><th>Phone</th><th>Owner</th><th>Email</th><th>Stage</th><th></th></tr></thead>
     <tbody>${leads.map((l, i) => `<tr>
       <td>${i + 1}</td><td><b>${esc(l.business)}</b></td><td>${esc(l.niche || "")}</td>
@@ -356,7 +502,7 @@ function renderLeads() {
       <td><button class="btn" data-convert="${l.id}">Convert to client</button>
       <button class="btn btn-danger" data-del="${l.id}">Delete</button></td>
     </tr>`).join("")}</tbody>
-  </table></div>`;
+  </table></div></div>`;
 }
 function bindLeads() {
   const add = $("#add-lead-btn");
@@ -391,8 +537,6 @@ const STAGES = ["New", "In conversation", "Proposal", "Won", "Lost"];
 function renderPipeline() {
   const leads = state.leads || [];
   return `
-  <h2>Client Pipeline</h2>
-  <p class="sub">5 stages. Move a card with the arrows or the stage picker.</p>
   <div class="pipeline">${STAGES.map((st) => `
     <div class="stage-col"><div class="stage-head">${esc(st)} (${leads.filter((l) => (l.stage || "New") === st).length})</div>
     ${leads.filter((l) => (l.stage || "New") === st).map((l) => `
@@ -401,7 +545,7 @@ function renderPipeline() {
         <div class="meta">${esc(l.owner || "no name on file")}</div>
         <div style="display:flex;gap:6px;margin-top:8px">
           <button class="btn" data-move="${l.id}|-1" ${STAGES.indexOf(l.stage || "New") === 0 ? "disabled" : ""}>←</button>
-          <select data-stagepick="${l.id}" style="flex:1">${STAGES.map((s) => `<option ${s === (l.stage || "New") ? "selected" : ""}>${s}</option>`).join("")}</select>
+          <select class="select" data-stagepick="${l.id}" style="flex:1">${STAGES.map((s) => `<option ${s === (l.stage || "New") ? "selected" : ""}>${s}</option>`).join("")}</select>
           <button class="btn" data-move="${l.id}|1" ${STAGES.indexOf(l.stage || "New") === STAGES.length - 1 ? "disabled" : ""}>→</button>
         </div>
       </div>`).join("") || `<div class="notice">No leads here.</div>`}
@@ -439,8 +583,6 @@ function renderCalendar() {
   const days = nextDays(14);
   const meetings = state.meetings || [];
   return `
-  <h2>Calendar</h2>
-  <p class="sub">Cal.com — pick an event type, a day, and a time. Booking opens your real Cal.com link: ${esc(CAL_LINK)}</p>
   <div class="cal-layout">
     <div>
       <div class="section-title" style="margin-top:0">Event types</div>
@@ -463,11 +605,11 @@ function renderCalendar() {
       <div class="slots">${SLOT_TIMES.map((t) => `<button class="slot ${calTime === t ? "sel" : ""}" data-caltime="${t}">${t}</button>`).join("")}</div>
       <div class="grid2">
         <div class="field"><label>Book for lead</label>
-          <select id="cal-lead">${(state.leads || []).map((l) => `<option value="${l.id}">${esc(l.business)}</option>`).join("")}</select></div>
-        <div class="field"><label>Your name</label><input id="cal-name" type="text" value="Roman Royce"></div>
+          <select class="select" id="cal-lead">${(state.leads || []).map((l) => `<option value="${l.id}">${esc(l.business)}</option>`).join("")}</select></div>
+        <div class="field"><label>Your name</label><input class="input" id="cal-name" type="text" value="Roman Royce"></div>
       </div>
       <div style="display:flex;gap:8px;flex-wrap:wrap">
-        <button class="btn btn-accent" id="cal-confirm">Confirm booking</button>
+        <button class="btn btn--primary" id="cal-confirm">Confirm booking</button>
         <button class="btn" id="cal-open">Book on Cal.com ↗</button>
       </div>
       <p class="notice">Confirm saves the meeting here and in the call log. The live Cal.com booking itself happens on cal.com — this app does not hold a Cal.com API key.</p>
@@ -510,22 +652,20 @@ function renderCallLog() {
       ${!calls.length && !(conv.messages || []).length ? `<div class="notice">No calls or messages yet for this lead.</div>` : ""}
     </div>
     <div class="chat-input">
-      <input id="chat-input" type="text" placeholder="Type a message or note for this lead…">
-      <button class="btn btn-accent" id="chat-send">Send</button>
+      <input class="input" id="chat-input" type="text" placeholder="Type a message or note for this lead…">
+      <button class="btn btn--primary" id="chat-send">Send</button>
     </div>
     <p class="notice">Messages you type here are saved to this lead's thread. Outbound texts go through Google Voice — use the TEXT button in RIP MODE to send them.</p>
     </div>`;
   }
   return `
-  <h2>Call Log</h2>
-  <p class="sub">Every call, mirrored as a conversation. Tap a lead to open its chat thread.</p>
   <div class="grid2">
     <div>
       <div class="section-title" style="margin-top:0">Calls</div>
-      <div class="card">${logs.length ? `<table><thead><tr><th>Lead</th><th>Outcome</th><th>When</th></tr></thead><tbody>
+      <div class="card">${logs.length ? `<div class="table-wrap"><table><thead><tr><th>Lead</th><th>Outcome</th><th>When</th></tr></thead><tbody>
         ${logs.map((c) => { const l = leadById(c.leadId); return `<tr class="rowlink" data-openconv="${c.leadId}">
           <td><b>${esc(l ? l.business : "—")}</b></td><td>${esc(c.outcome)}</td><td>${esc(c.date)} ${esc(c.time)}</td></tr>`; }).join("")}
-      </tbody></table>` : `<div class="notice">No calls logged yet. Dial in RIP MODE and log the outcome.</div>`}</div>
+      </tbody></table></div>` : `<div class="notice">No calls logged yet. Dial in RIP MODE and log the outcome.</div>`}</div>
     </div>
     <div>
       <div class="section-title" style="margin-top:0">Conversations</div>
@@ -567,8 +707,6 @@ function renderConnections() {
     ["Twilio", "Not needed", "Dropped. Google Voice handles calling and texting for free — no Twilio upgrade, no Twilio number.", ""],
   ];
   return `
-  <h2>Connections</h2>
-  <p class="sub">Honest status — nothing here is marked connected unless it was verified.</p>
   <div class="card">${rows.map(([name, status, note, cls]) => `
     <div class="kv"><span><b>${esc(name)}</b><br><span style="color:var(--muted);font-size:13px">${esc(note)}</span></span>
     <span class="badge ${cls}">${esc(status)}</span></div>`).join("")}</div>`;
@@ -583,9 +721,11 @@ function bindTab() {
   else if (currentTab === "calllog") bindCallLog();
 }
 
-$("#login-btn").addEventListener("click", doLogin);
-$("#login-password").addEventListener("keydown", (e) => { if (e.key === "Enter") doLogin(); });
-$("#login-username").addEventListener("keydown", (e) => { if (e.key === "Enter") doLogin(); });
+/* The Sign In button is a submit button inside #login-form, so the form's
+   submit is the single entry point (Enter key included) — no separate
+   click/keydown handlers, which would double-fire doLogin. */
+const loginForm = $("#login-form");
+if (loginForm) loginForm.addEventListener("submit", (e) => { e.preventDefault(); doLogin(); });
 $("#login-username").addEventListener("input", async (e) => {
   const u = e.target.value.trim().toLowerCase();
   if (ALLOWED_USERS.includes(u)) {
@@ -593,11 +733,29 @@ $("#login-username").addEventListener("input", async (e) => {
       const s = await api("/auth/check", "POST", {username: u});
       $("#confirm-wrap").classList.toggle("hidden", s.hasAccount);
       $("#login-hint").textContent = s.hasAccount
-        ? "Welcome back — enter your password."
-        : "First time for this username — set a password (min 8 characters) and it will be saved for next time.";
+        ? "Welcome back — enter your 4-digit passcode."
+        : "First time for this username — set a 4-digit passcode and it will be saved for next time.";
     } catch (_) {}
   }
 });
-$("#logout-btn").addEventListener("click", logout);
+/* Typing fix (2026-11-20): the login fields are plain inputs — no readonly,
+   no disabled, no timers, nothing that clears what the user types. The old
+   readonly-until-focus trick + clearAutofill() timers (300/600/2000ms) are
+   what stopped Rome typing: on touch/keyboard the readonly field never
+   became editable, and the timers wiped values after load. Autofill is
+   discouraged only by autocomplete="off" / "new-password" on the fields and
+   the visible "Username, not your email" hint. If Chrome autofills an email
+   into Username, submit rejects any "@" with a plain message and the user
+   can tap the field and retype — nothing wipes their input.
+   Never prefill or store his email anywhere. */
+["#login-passcode", "#login-confirm"].forEach((sel) => {
+  const el = $(sel);
+  if (!el) return;
+  el.addEventListener("input", () => {
+    // digits only, max 4 — filter characters as typed, never clear the field
+    const d = el.value.replace(/\D/g, "").slice(0, 4);
+    if (el.value !== d) el.value = d;
+  });
+});
 
 checkSession();

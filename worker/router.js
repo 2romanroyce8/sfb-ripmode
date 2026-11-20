@@ -1,7 +1,9 @@
 // sfb-ripmode-router — Cloudflare Worker.
 // 1) Proxies sixfigureblueprints.com/ripmode* to the Vercel app (BillMe pattern).
 // 2) Serves the app's API at /ripmode/api/* with shared state in KV (ripmode-data).
-// Passwords are stored ONLY as salted PBKDF2-SHA256 hashes (100,000 iterations — the Cloudflare Workers PBKDF2 cap).
+// Passcodes are stored ONLY as salted PBKDF2-SHA256 hashes (100,000 iterations — the Cloudflare Workers PBKDF2 cap).
+// Login is username + exactly 4 digits. The JSON field is still named
+// "password" on the wire; its value is the 4-digit passcode.
 // Google Voice has NO API: this worker never dials, texts, or drops voicemail.
 // The personal forwarding number must NEVER appear in this file or any response.
 
@@ -43,9 +45,9 @@ function hex(buf) {
 async function sha256Hex(text) {
   return hex(await crypto.subtle.digest("SHA-256", enc.encode(text)));
 }
-async function hashPassword(password, saltB64) {
+async function hashPasscode(passcode, saltB64) {
   const salt = saltB64 ? unb64(saltB64) : crypto.getRandomValues(new Uint8Array(16));
-  const key = await crypto.subtle.importKey("raw", enc.encode(password), "PBKDF2", false, ["deriveBits"]);
+  const key = await crypto.subtle.importKey("raw", enc.encode(passcode), "PBKDF2", false, ["deriveBits"]);
   const bits = await crypto.subtle.deriveBits(
     { name: "PBKDF2", salt, iterations: 100000, hash: "SHA-256" },
     key, 256
@@ -124,9 +126,9 @@ async function handleApi(request, env) {
     const { username, password } = await request.json().catch(() => ({}));
     const u = String(username || "").toLowerCase();
     if (!ALLOWED_USERS.includes(u)) return err("That username is not on the team.");
-    if (!password || password.length < 8) return err("Password must be at least 8 characters.");
+    if (!/^\d{4}$/.test(password || "")) return err("Enter a 4-digit passcode.");
     if (await env.RIPMODE_KV.get("users:" + u)) return err("That username already has an account — sign in instead.");
-    const { salt, hash } = await hashPassword(password);
+    const { salt, hash } = await hashPasscode(password);
     await env.RIPMODE_KV.put("users:" + u, JSON.stringify({ salt, hash }));
     const token = await newSession(env, u);
     return json({ token, username: u });
@@ -134,12 +136,13 @@ async function handleApi(request, env) {
   if (path === "/api/auth/login" && request.method === "POST") {
     const { username, password } = await request.json().catch(() => ({}));
     const u = String(username || "").toLowerCase();
-    if (!ALLOWED_USERS.includes(u)) return err("Invalid username or password.", 401);
+    if (!ALLOWED_USERS.includes(u)) return err("Invalid username or passcode.", 401);
+    if (!/^\d{4}$/.test(password || "")) return err("Invalid username or passcode.", 401);
     const raw = await env.RIPMODE_KV.get("users:" + u);
-    if (!raw) return err("Invalid username or password.", 401);
+    if (!raw) return err("Invalid username or passcode.", 401);
     const { salt, hash } = JSON.parse(raw);
-    const attempt = await hashPassword(password, salt);
-    if (attempt.hash !== hash) return err("Invalid username or password.", 401);
+    const attempt = await hashPasscode(password, salt);
+    if (attempt.hash !== hash) return err("Invalid username or passcode.", 401);
     const token = await newSession(env, u);
     return json({ token, username: u });
   }
