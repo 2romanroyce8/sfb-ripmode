@@ -110,7 +110,10 @@ async function doLogin() {
   if (!/^\d{4}$/.test(passcode)) { err.textContent = "Enter a 4-digit passcode."; err.className = "error"; return; }
   if (doLogin.busy) return; // form submit + Enter can double-fire — one attempt at a time
   doLogin.busy = true;
-  $("#login-btn").disabled = true;
+  const btn = $("#login-btn");
+  btn.disabled = true;
+  btn.dataset.label = btn.textContent;
+  btn.textContent = "Signing in\u2026"; // visible loading state while the request runs
   try {
     const status = await api("/auth/check", "POST", {username});
     if (!status.hasAccount) {
@@ -133,7 +136,7 @@ async function doLogin() {
       const s = await api("/auth/check", "POST", {username});
       if (!s.hasAccount) $("#confirm-wrap").classList.remove("hidden");
     } catch (_) {}
-  } finally { $("#login-btn").disabled = false; doLogin.busy = false; }
+  } finally { const b = $("#login-btn"); b.disabled = false; b.textContent = b.dataset.label || "Sign in"; doLogin.busy = false; }
 }
 
 function logout() {
@@ -727,11 +730,15 @@ function bindTab() {
 
 /* The Sign In button is a submit button inside #login-form, so the form's
    submit is the single entry point (Enter key included) — no separate
-   click/keydown handlers, which would double-fire doLogin. The form also
-   carries inline onsubmit="return false" + action="javascript:void(0)" in
-   index.html: even if this file is stale or fails to load, Enter can never
-   trigger a native navigation (a GET to /ripmode?username=... 404s at the
-   Cloudflare route level — that is what stranded Rome on the homepage 404). */
+   click/keydown handlers, which would double-fire doLogin. This listener's
+   preventDefault() is the ONLY thing stopping a native navigation: the form
+   carries no inline onsubmit/action in index.html, deliberately. An inline
+   onsubmit handler returning false swallows the submit event before this
+   listener runs, so Enter silently did nothing at all (seen live 2026-11-20)
+   — never re-add it. A native GET submit to /ripmode?username=... 404s at the
+   Cloudflare route level (query-string URLs never reach this worker), so if
+   this file ever fails to load, Enter will 404 instead of silently dying —
+   that failure is loud, which is the point. */
 const loginForm = $("#login-form");
 if (loginForm) loginForm.addEventListener("submit", (e) => { e.preventDefault(); doLogin(); });
 $("#login-username").addEventListener("input", async (e) => {

@@ -145,12 +145,12 @@ and any `/ripmode` URL with a query string 404s — verified by curl
 never deliver a query-string URL to this worker at all (the worker itself
 serves the app for any `/ripmode` path regardless of query), so the fix
 has to be in the app: the login form can never navigate, period.
-- The form carries inline `onsubmit="return false"` +
-  `action="javascript:void(0)"` in index.html, so even if app.js is stale
-  or fails to load, Enter can never trigger a native navigation. app.js
-  still handles submit with preventDefault + fetch, and the dashboard
-  renders in place on the same page — no reload, no redirect, no query
-  string, ever.
+- **SUPERSEDED by v3.1 below — this guard was itself the bug.** The form
+  carried inline `onsubmit="return false"` + `action="javascript:void(0)"`
+  in index.html, meant so that even if app.js is stale or fails to load,
+  Enter can never trigger a native navigation. In practice the inline
+  handler swallows the submit event before the app.js listener runs, so
+  Enter silently did nothing at all (seen live 2026-11-20). Do NOT re-add it.
 - Second bug fixed in the same pass: `doLogin()` set `doLogin.busy = true`
   BEFORE validation and returned early on validation errors without
   resetting it, permanently locking Sign in until a reload. Validation
@@ -194,3 +194,58 @@ has to be in the app: the login form can never navigate, period.
   (one stale KV read briefly showed loganwells true right after the
   delete; three re-checks after propagation all show false). Zero
   occurrences of the personal forwarding number in the app/worker.
+
+## Login v3.1 — Enter fix: remove the inline submit guard (2026-11-20)
+The v3 guard backfired. A live-browser test typed a NON-allowlisted
+username ("testuser") + "1234" and pressed Enter: the page stayed on
+/ripmode (no 404 — that part was fixed), but Enter produced NO visible
+response at all — no error, no success, no loading state, form unchanged.
+Root cause, verified in code: the inline `onsubmit="return false"` on
+#login-form swallows the submit event, so the app.js submit listener
+never runs and doLogin() is never called. The fix:
+- index.html: the form is now plain `<form id="login-form"
+  autocomplete="off" novalidate>` — NO inline onsubmit, NO
+  `action="javascript:void(0)"`. The app.js listener is the ONLY
+  navigation guard: `loginForm.addEventListener("submit", (e) => {
+  e.preventDefault(); doLogin(); })` — exactly one submit path, no
+  separate click/keydown handlers (those would double-fire doLogin).
+  Never re-add the inline guard; the comments in index.html and app.js
+  say so. Trade-off accepted: if app.js ever fails to load, Enter will
+  do a native GET submit and 404 loudly instead of dying silently.
+- doLogin() now shows a visible loading state: the Sign in button reads
+  "Signing in…" and is disabled while the request runs, restored in the
+  `finally` block. Every outcome is visible: non-allowlisted username
+  → "That username is not on the team…", bad passcode → "Enter a 4-digit
+  passcode.", wrong passcode → 401 "Invalid username or passcode.",
+  success → dashboard. Never a silent no-op, never a navigation, never
+  a query string in the URL.
+- Busy-flag fix from v3 confirmed still in place: validation runs BEFORE
+  `doLogin.busy = true`, and `finally` always resets busy + button.
+- Typing fix NOT regressed: no readonly, no clearAutofill timers.
+  Full-screen layout, SFB logo, "Yooo, welcome back!", 4-digit passcode,
+  required copy and Google Voice (213) 495-3536 all unchanged.
+- Verified 2026-11-20 ~13:33 UTC: deployed with deploy.py (KV binding
+  preserved, worker modified 13:33:09 UTC). First live fetch hit a stale
+  edge cache (old page); re-fetch seconds later served the new page.
+  Live text fetch confirms: no `onsubmit=`, no `javascript:void(0)`,
+  clean form tag, "Yooo, welcome back!", SFB logo data URI,
+  4-digit passcode; served app.js has the single submit listener,
+  preventDefault + doLogin, and the "Signing in…" label. E2E as
+  temporary loganwells / 4829 passed via the live API (signup 200,
+  duplicate 400, wrong passcode 401, short passcode 401, correct login
+  200; state via curl loads Jax + Performance, both New, stats zeroed;
+  logout 200, post-logout state 401). Test user + all 3 test sessions
+  deleted from KV (only `state` remains); all three users confirmed
+  hasAccount:false after. Zero occurrences of the personal forwarding
+  number in the app/worker.
+- Testing notes (do not re-learn the hard way): (1) Python urllib's
+  default User-Agent gets Cloudflare 1010 on this zone — always send
+  `User-Agent: curl/8.0` (same lesson as the Cal.com helper). (2) When
+  truncating a token for logging, NEVER reuse the truncated value as
+  the token — a truncated token 401s on every authed call and looks
+  exactly like a broken session store.
+- Honest limitation: no live-browser tool in this session, so the Enter
+  key itself was verified only in code + API. The parent MUST re-run the
+  live-browser Enter test (non-allowlisted username + 4 digits + Enter):
+  it must show a visible rejection and stay on /ripmode. Do not claim
+  Enter works until that live check passes.

@@ -26,8 +26,12 @@ html,body{background:#080808;color:#f5f5f5;font-family:-apple-system,BlinkMacSys
 <body class="sfb-hq sfb-staff">
 <div id="app">
   <!-- LOGIN — dark FULL-SCREEN (2026-11-20). Plain inputs: no readonly,
-       no disabled, nothing clears what the user types. The form can never
-       navigate: inline onsubmit="return false" + app.js preventDefault. -->
+       no disabled, nothing clears what the user types. The form submits
+       normally into app.js, whose submit listener calls preventDefault()
+       and then doLogin() — that is the ONLY thing stopping navigation.
+       Do NOT add inline onsubmit/action hacks: an inline onsubmit handler
+       returning false swallows the submit event so the app.js handler
+       never runs, and Enter then does nothing at all (seen live 2026-11-20). -->
   <div id="login-screen" class="screen">
     <div class="login-page">
       <div class="login-card">
@@ -40,13 +44,13 @@ html,body{background:#080808;color:#f5f5f5;font-family:-apple-system,BlinkMacSys
         <h1>Yooo, welcome back!</h1>
         <p class="login-sub">First time here? <b>Sign up for free</b></p>
         <div id="login-error" class="error hidden"></div>
-        <!-- onsubmit="return false" + action="javascript:void(0)" are the safety net:
-             even if app.js is stale or fails to load, Enter can NEVER trigger a
-             native form navigation (a GET to /ripmode?username=... 404s at the
-             Cloudflare route level, because query-string URLs never reach this
-             worker — that is what stranded Rome on the homepage 404 on 2026-11-20).
-             The submit event is handled in place by app.js (preventDefault + fetch). -->
-        <form id="login-form" autocomplete="off" novalidate action="javascript:void(0)" onsubmit="return false;">
+        <!-- The submit event is handled in place by app.js: its listener calls
+             preventDefault() and then doLogin() (fetch + visible result). There
+             is deliberately NO inline onsubmit/action here — an inline onsubmit
+             handler returning false swallows the submit event before the app.js
+             listener runs, so Enter silently did nothing (seen live 2026-11-20).
+             preventDefault in the JS handler is the only navigation guard. -->
+        <form id="login-form" autocomplete="off" novalidate>
           <label class="login-field"><span>Username</span>
             <input id="login-username" type="text" name="username" autocomplete="off" placeholder="romanroyce" autocapitalize="off" autocorrect="off" spellcheck="false">
             <span class="field-hint">Username, not your email &mdash; romanroyce, loganwells, or braylengarrett</span>
