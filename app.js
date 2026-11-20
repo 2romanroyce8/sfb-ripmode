@@ -34,6 +34,7 @@ let calDate = new Date(_calToday); // selected day, defaults to today
 let calTz = "America/New_York";
 const CAL_TZ_LABELS = {"America/New_York": "Eastern", "America/Chicago": "Central", "America/Denver": "Mountain", "America/Los_Angeles": "Pacific", "America/Phoenix": "Mountain (no DST)"};
 let activeConv = null;    // lead id for call-log conversation view
+let phoneView = "msgs";  // inside the iPhone mockup: "msgs" (Messages list) or "calls" (Recents list)
 let micStream = null, micLevel = 0, micOn = false, muted = false;
 
 const $ = (s) => document.querySelector(s);
@@ -187,7 +188,7 @@ function openGoogleVoice(kind, lead) {
 
 /* ---------- shell: template nav / topbar / account menu ---------- */
 const TAB_META = {
-  rip: ["RIP MODE", "Dialer — calling from Google Voice (213) 495-3536. Google Voice has no API, so Call opens Google Voice with this lead's number ready — you talk, then log the outcome here."],
+  rip: ["RIP MODE", ""], // no subtitle under the dialer heading (removed 2026-11-20 at Rome's request; GV number still shown on CALL/TEXT + in the thread note)
   leads: ["Leads", "New leads start in the Pipeline at \"New\"."],
   pipeline: ["Client Pipeline", "5 stages. Move a card with the arrows or the stage picker."],
   calendar: ["Calendar", "Cal.com — pick an event type, a day, and a time. Booking opens your real Cal.com link: https://cal.com/roman-royce/30min"],
@@ -320,7 +321,7 @@ function render() {
   else if (currentTab === "calendar") body = renderCalendar();
   else if (currentTab === "calllog") body = renderCallLog();
   else if (currentTab === "connections") body = renderConnections();
-  main.innerHTML = `<div class="page-heading"><div><span class="eyebrow">YOUR WORKSPACE</span><h1>${esc(meta[0])}</h1><p>${esc(sub)}</p></div></div>` + body;
+  main.innerHTML = `<div class="page-heading"><div><span class="eyebrow">YOUR WORKSPACE</span><h1>${esc(meta[0])}</h1>${sub ? `<p>${esc(sub)}</p>` : ""}</div></div>` + body;
   bindTab();
 }
 
@@ -409,7 +410,6 @@ function renderRip() {
       </div>
       <button class="big-call" id="call-btn">CALL</button>
       <button class="btn" id="text-btn" style="width:100%;margin-top:8px;padding:13px">TEXT</button>
-      <p class="notice">Call opens Google Voice (calls page) — dial ${esc(lead.phone)} from ${esc(GV_NUMBER)}. Text opens Google Voice messages — send from ${esc(GV_NUMBER)}.</p>
     </div>
   </div>`;
 }
@@ -704,7 +704,30 @@ function bindCalendar() {
   };
 }
 
-/* ---------- CALL LOG + CONVERSATIONS ---------- */
+/* ---------- CALL LOG + CONVERSATIONS ----------
+   Rendered inside a CSS mock iPhone 18 (2026-11-20): the phone is a
+   FRAME around the existing working UI, not a picture of one. Same
+   functions as before — tap a conversation to open its thread, back
+   returns to the list, typing + Send saves to that lead's thread, tap a
+   Recents row opens that lead's thread. Messages list and Recents list
+   switch with the segmented control at the top of the phone screen.
+   All data is real: calls/messages come from state, nothing invented. */
+function iphoneChrome(inner) {
+  return `
+  <div class="iphone-wrap">
+    <div class="iphone" role="img" aria-label="iPhone showing the Call Log">
+      <span class="iphone-side iphone-side-l1"></span>
+      <span class="iphone-side iphone-side-l2"></span>
+      <span class="iphone-side iphone-side-r"></span>
+      <div class="iphone-screen">
+        <div class="iphone-island"></div>
+        <div class="iphone-status"><span>9:41</span><span class="iphone-status-icons"><svg width="17" height="11" viewBox="0 0 17 11" fill="#fff"><rect x="0" y="7" width="3" height="4" rx="1"/><rect x="4.5" y="5" width="3" height="6" rx="1"/><rect x="9" y="2.5" width="3" height="8.5" rx="1"/><rect x="13.5" y="0" width="3" height="11" rx="1"/></svg><svg width="16" height="11" viewBox="0 0 16 12" fill="#fff"><path d="M8 10.8a1.4 1.4 0 1 0 0-2.8 1.4 1.4 0 0 0 0 2.8zM8 6.2c1.2 0 2.3.5 3.1 1.3l-1.5 1.5A2.4 2.4 0 0 0 8 8.4c-.7 0-1.3.2-1.7.6L4.9 7.5A4.6 4.6 0 0 1 8 6.2zM8 2c2.4 0 4.6 1 6.2 2.5L12.7 6A6.4 6.4 0 0 0 8 4.2c-1.7 0-3.3.7-4.5 1.8L2 4.5A8.6 8.6 0 0 1 8 2z"/></svg><svg width="25" height="12" viewBox="0 0 25 12" fill="none"><rect x="0.5" y="0.5" width="21" height="11" rx="3.5" stroke="#fff" opacity="0.4"/><rect x="2" y="2" width="16" height="8" rx="2" fill="#fff"/><path d="M23.5 4v4a2 2 0 0 0 0-4z" fill="#fff" opacity="0.4"/></svg></span></div>
+        ${inner}
+        <div class="iphone-home"></div>
+      </div>
+    </div>
+  </div>`;
+}
 function renderCallLog() {
   const logs = [...(state.callLogs || [])].reverse();
   const leads = state.leads || [];
@@ -712,34 +735,29 @@ function renderCallLog() {
     const lead = leadById(activeConv);
     const conv = convFor(activeConv) || {messages: []};
     const calls = callsFor(activeConv);
-    return `
-    <button class="btn" id="back-convs">← All conversations</button>
-    <h2 style="margin-top:14px">${esc(lead ? lead.business : "Conversation")}</h2>
-    <p class="sub">${esc(lead ? lead.phone : "")} · ${calls.length} call${calls.length === 1 ? "" : "s"} logged</p>
-    <div class="card"><div class="chat-thread">
-      ${calls.map((c) => `<div class="im-sys">Call — ${esc(callLabel(c.outcome))} · ${esc(c.date)} · ${esc(c.time)}</div>`).join("")}
-      ${(conv.messages || []).map((m) => `${(m.date || m.time) ? `<div class="im-stamp">${esc(m.date || "")}${m.date && m.time ? " · " : ""}${esc(m.time || "")}</div>` : ""}<div class="msg ${m.from === "me" ? "out" : "in"}">${esc(m.text)}</div>`).join("") || ""}
-      ${!calls.length && !(conv.messages || []).length ? `<div class="notice">No calls or messages yet for this lead.</div>` : ""}
-    </div>
-    <div class="chat-input">
-      <input class="input" id="chat-input" type="text" placeholder="Type a message or note for this lead…">
-      <button class="chat-send" id="chat-send" type="button" aria-label="Send">↑</button>
-    </div>
-    <p class="notice">Messages you type here are saved to this lead's thread. Outbound texts go through Google Voice — use the TEXT button in RIP MODE to send them.</p>
-    </div>`;
+    return iphoneChrome(`
+      <div class="iphone-thread-head">
+        <button class="iphone-back" id="back-convs" type="button" aria-label="Back to all conversations">‹</button>
+        <span class="im-avatar iphone-head-avatar">${esc(initialsFor(lead ? lead.business : "?"))}</span>
+        <span class="iphone-head-name"><b>${esc(lead ? lead.business : "Conversation")}</b><span>${esc(lead ? lead.phone : "")} · ${calls.length} call${calls.length === 1 ? "" : "s"} logged</span></span>
+      </div>
+      <div class="iphone-body"><div class="chat-thread iphone-thread">
+        ${calls.map((c) => `<div class="im-sys">Call — ${esc(callLabel(c.outcome))} · ${esc(c.date)} · ${esc(c.time)}</div>`).join("")}
+        ${(conv.messages || []).map((m) => `${(m.date || m.time) ? `<div class="im-stamp">${esc(m.date || "")}${m.date && m.time ? " · " : ""}${esc(m.time || "")}</div>` : ""}<div class="msg ${m.from === "me" ? "out" : "in"}">${esc(m.text)}</div>`).join("") || ""}
+        ${!calls.length && !(conv.messages || []).length ? `<div class="notice iphone-empty">No calls or messages yet for this lead.</div>` : ""}
+      </div></div>
+      <div class="chat-input iphone-input">
+        <input class="input" id="chat-input" type="text" placeholder="iMessage">
+        <button class="chat-send" id="chat-send" type="button" aria-label="Send">↑</button>
+      </div>
+      <p class="notice iphone-note">Messages you type here are saved to this lead's thread. Outbound texts go through Google Voice — use the TEXT button in RIP MODE to send them.</p>`);
   }
-  return `
-  <div class="grid2">
-    <div>
-      <div class="section-title" style="margin-top:0">Calls</div>
-      <div class="card">${logs.length ? `<div class="recents">
-        ${logs.map((c) => { const l = leadById(c.leadId); const missed = isMissedCall(c); return `<button class="recent-item" data-openconv="${c.leadId}">
-          <span class="recent-main"><b class="${missed ? "missed" : ""}">${esc(l ? l.business : "—")}</b><span class="recent-sub ${missed ? "missed" : ""}">${missed ? "↙ Missed call" : "↗ Outgoing call"} · ${esc(callLabel(c.outcome))}</span></span>
-          <span class="recent-right"><span class="recent-time">${esc(whenShort(c.date, c.time))}</span><span class="recent-chev">›</span></span></button>`; }).join("")}
-      </div>` : `<div class="notice">No calls logged yet. Dial in RIP MODE and log the outcome.</div>`}</div>
-    </div>
-    <div>
-      <div class="section-title" style="margin-top:0">Conversations</div>
+  const seg = `
+    <div class="iphone-seg" role="tablist">
+      <button type="button" data-phoneview="msgs" class="${phoneView === "msgs" ? "sel" : ""}">Messages</button>
+      <button type="button" data-phoneview="calls" class="${phoneView === "calls" ? "sel" : ""}">Recents</button>
+    </div>`;
+  const msgsList = `
       <div class="conv-list">${leads.map((l) => {
         const conv = convFor(l.id);
         const lastMsg = (conv && conv.messages && conv.messages[conv.messages.length - 1]) || null;
@@ -750,11 +768,18 @@ function renderCallLog() {
           <span class="im-avatar">${esc(initialsFor(l.business))}</span>
           <span class="im-conv-main"><b>${esc(l.business)}</b><span class="im-preview">${lastMsg ? esc(lastMsg.text.slice(0, 60)) : (n ? n + " call" + (n === 1 ? "" : "s") + " logged" : "No calls or messages yet")}</span></span>
           <span class="im-conv-right">${lastAt ? `<span class="im-time">${esc(lastAt)}</span>` : ""}${(l.stage || "New") === "New" ? `<span class="im-unread" title="New lead"></span>` : ""}</span></button>`;
-      }).join("")}</div>
-    </div>
-  </div>`;
+      }).join("")}</div>`;
+  const callsList = `
+      <div class="recents">${logs.length ? logs.map((c) => { const l = leadById(c.leadId); const missed = isMissedCall(c); return `<button class="recent-item" data-openconv="${c.leadId}">
+        <span class="recent-main"><b class="${missed ? "missed" : ""}">${esc(l ? l.business : "—")}</b><span class="recent-sub ${missed ? "missed" : ""}">${missed ? "↙ Missed call" : "↗ Outgoing call"} · ${esc(callLabel(c.outcome))}</span></span>
+        <span class="recent-right"><span class="recent-time">${esc(whenShort(c.date, c.time))}</span><span class="recent-chev">›</span></span></button>`; }).join("") : `<div class="notice iphone-empty">No calls logged yet. Dial in RIP MODE and log the outcome.</div>`}</div>`;
+  return iphoneChrome(`
+      <div class="iphone-title">${phoneView === "calls" ? "Recents" : "Messages"}</div>
+      ${seg}
+      <div class="iphone-body">${phoneView === "calls" ? callsList : msgsList}</div>`);
 }
 function bindCallLog() {
+  document.querySelectorAll("[data-phoneview]").forEach((el) => el.onclick = () => { phoneView = el.dataset.phoneview; render(); });
   const back = $("#back-convs");
   if (back) back.onclick = () => { activeConv = null; render(); };
   document.querySelectorAll("[data-openconv]").forEach((el) => el.onclick = () => { activeConv = el.dataset.openconv; render(); });

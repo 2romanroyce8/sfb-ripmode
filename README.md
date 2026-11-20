@@ -409,3 +409,51 @@ tall round oval with "Key" / "pending" wrapped on two lines, next to clean
   the current v3 full-screen login — the live login renders full-screen
   because index.html's inline critical CSS wins. Out of scope for this
   fix; the files should be re-synced on the next login touch.
+
+## Mock iPhone 18 — Call Log (2026-11-20)
+Rome asked for the Call Log to look like an iPhone: a mock iPhone 18
+with the Messages UI inside it, blue iMessage bubbles, same functions.
+- The Call Log tab content renders inside a CSS iPhone (`.iphone`):
+  rounded frame, thin bezel, Dynamic Island, side buttons, status bar
+  (9:41 + signal/wifi/battery), home indicator bar. The phone is a
+  FRAME around the existing working UI, not a picture of one.
+- Inside the screen: "Messages" list (avatar initials, bold name, grey
+  preview, time, blue unread dot) and "Recents" list (iPhone Phone
+  Recents style) switch with a segmented control at the top of the
+  screen (`phoneView` state in app.js). Tapping a conversation opens
+  its thread inside the phone (iOS thread header: back chevron, avatar,
+  name, phone · N calls logged); back returns to the list; tapping a
+  Recents row opens that lead's thread. Typing + Send saves to that
+  lead's thread (same `#chat-input` / `#chat-send` ids and `addMessage`
+  behaviour). Messages are iMessage bubbles — outgoing blue on the
+  right, incoming grey on the left — with centred grey timestamps and
+  calls as centred grey system rows. The Google Voice thread note
+  stays ("Outbound texts go through Google Voice — use the TEXT button
+  in RIP MODE to send them.").
+- Real data only: Jax's 2 real Dialed calls (Nov 20, 2026, 2:26 PM +
+  2:27 PM) show exactly as logged; no messages exist yet, so threads
+  show the honest empty state until Rome types one. Nothing invented.
+  The phone is always dark (iOS Messages dark), whatever the dashboard
+  appearance toggle is set to.
+- Verified 2026-11-20: `node --check` clean; a Node harness loading the
+  real app.js passed 42/42 checks (phone chrome, Messages + Recents
+  lists, thread with both real sys rows, GV note kept, no invented
+  content, both removals below). Deployed with deploy.py (KV binding
+  preserved); asset versions bumped v=6 → v=7.
+- Honest limitation: the Call Log tab is behind login, so the phone
+  mockup could not be visually verified in this session without Rome's
+  passcode. Rome must hard-refresh and check the Call Log tab himself.
+
+## Removals at Rome's request (2026-11-20, same deploy)
+- RIP MODE subtitle deleted: "Dialer — calling from Google Voice
+  (213) 495-3536. Google Voice has no API, so Call opens Google Voice
+  with this lead's number ready — you talk, then log the outcome here."
+  The "RIP MODE" heading stays with no replacement text; `render()`
+  omits the subtitle paragraph when a tab's subtitle is empty, so no
+  empty `<p>` is left behind. Other tabs keep their subtitles.
+- CALL/TEXT explainer note deleted: "Call opens Google Voice (calls
+  page) — dial (904) 621-6005 from (213) 495-3536. Text opens Google
+  Voice messages — send from (213) 495-3536." The CALL and TEXT
+  buttons themselves are unchanged and still open Google Voice with
+  the lead's number from (213) 495-3536. The thread's own Google Voice
+  note (above) stays.
