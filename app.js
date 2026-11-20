@@ -27,7 +27,12 @@ let me = "";
 let state = null;         // shared state from KV: leads, callLogs, conversations, meetings, stats
 let currentTab = "rip";
 let ripIndex = 0;
-let calEvent = null, calDay = null, calTime = null;
+let calEvent = null, calTime = null;
+const _calToday = new Date(); _calToday.setHours(0, 0, 0, 0);
+let calMonth = {y: _calToday.getFullYear(), m: _calToday.getMonth()}; // viewed month
+let calDate = new Date(_calToday); // selected day, defaults to today
+let calTz = "America/New_York";
+const CAL_TZ_LABELS = {"America/New_York": "Eastern", "America/Chicago": "Central", "America/Denver": "Mountain", "America/Los_Angeles": "Pacific", "America/Phoenix": "Mountain (no DST)"};
 let activeConv = null;    // lead id for call-log conversation view
 let micStream = null, micLevel = 0, micOn = false, muted = false;
 
@@ -571,7 +576,13 @@ function bindPipeline() {
   });
 }
 
-/* ---------- CALENDAR (Cal.com mirror) ---------- */
+/* ---------- CALENDAR (Cal.com mirror) ----------
+   Layout rebuilt 2026-11-20 to the Cal.com booking page Rome sent:
+   left event-detail panel (host, event type, duration, Google Meet,
+   timezone) + right month grid with a white selected-date tile.
+   Real data only: Rome's 5 verified Cal.com event types,
+   America/New_York, no price (his bookings are free). The grid shows
+   the CURRENT month; today is the default selected date. */
 const CAL_TYPES = [
   {id: "15min", name: "15 min meeting", desc: "15 minutes · Video call", mins: 15},
   {id: "30min", name: "30 min meeting", desc: "30 minutes · Video call", mins: 30},
@@ -580,22 +591,40 @@ const CAL_TYPES = [
   {id: "bingled-website-strategy", name: "Bingled — Website Strategy Call", desc: "Website strategy · Video call", mins: 30},
 ];
 const SLOT_TIMES = ["9:00 AM","9:30 AM","10:00 AM","10:30 AM","11:00 AM","11:30 AM","1:00 PM","1:30 PM","2:00 PM","2:30 PM","3:00 PM","3:30 PM","4:00 PM","4:30 PM"];
-function nextDays(n) {
-  const out = [];
-  const d = new Date();
-  while (out.length < n) { d.setDate(d.getDate() + 1); out.push(new Date(d)); }
-  return out;
-}
+const CAL_TZONES = ["America/New_York", "America/Chicago", "America/Denver", "America/Los_Angeles", "America/Phoenix"];
+function _calSameDay(a, b) { return !!(a && b && a.getFullYear() === b.getFullYear() && a.getMonth() === b.getMonth() && a.getDate() === b.getDate()); }
+function _calKey(d) { return d.getFullYear() + "-" + (d.getMonth() + 1) + "-" + d.getDate(); }
 function renderCalendar() {
-  const days = nextDays(14);
+  const type = CAL_TYPES.find((t) => t.id === calEvent) || CAL_TYPES[1];
   const meetings = state.meetings || [];
+  const {y, m} = calMonth;
+  const first = new Date(y, m, 1);
+  const startOffset = first.getDay(); // Sunday = 0
+  const daysInMonth = new Date(y, m + 1, 0).getDate();
+  const daysInPrev = new Date(y, m, 0).getDate();
+  const cells = [];
+  for (let i = 0; i < startOffset; i++) cells.push({d: new Date(y, m - 1, daysInPrev - startOffset + 1 + i), outside: true});
+  for (let d = 1; d <= daysInMonth; d++) cells.push({d: new Date(y, m, d), outside: false});
+  while (cells.length % 7 !== 0) { const last = cells[cells.length - 1].d; cells.push({d: new Date(last.getFullYear(), last.getMonth(), last.getDate() + 1), outside: true}); }
+  const atCurrentMonth = y === _calToday.getFullYear() && m === _calToday.getMonth();
+  const monthLabel = first.toLocaleDateString("en-US", {month: "long"});
+  const yearLabel = String(y);
+  const selLabel = calDate ? calDate.toLocaleDateString("en-US", {weekday: "long", month: "long", day: "numeric"}) : "Pick a day";
   return `
-  <div class="cal-layout">
-    <div>
+  <div class="calbook">
+    <div class="calbook-side">
+      <div class="calbook-host"><span class="calbook-avatar">RR</span><b>Roman Royce</b></div>
       <div class="section-title" style="margin-top:0">Event types</div>
-      ${CAL_TYPES.map((t) => `<div class="event-type ${calEvent === t.id ? "sel" : ""}" data-caltype="${t.id}">
+      ${CAL_TYPES.map((t) => `<div class="event-type ${type.id === t.id ? "sel" : ""}" data-caltype="${t.id}">
         <b>${esc(t.name)}</b><span>${esc(t.desc)}</span></div>`).join("")}
-      <div class="card" style="margin-top:16px">
+      <h2 class="calbook-title">${esc(type.name)}</h2>
+      <p class="calbook-desc">${esc(type.desc)}</p>
+      <div class="calbook-meta">
+        <div class="calbook-meta-row"><svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="9"/><path d="M12 7v5l3 2"/></svg><span>${type.mins} minutes</span></div>
+        <div class="calbook-meta-row"><svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><rect x="2" y="6" width="13" height="12" rx="2"/><path d="M15 10l7-3v10l-7-3"/></svg><span>Google Meet</span></div>
+        <div class="calbook-meta-row"><svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="9"/><path d="M3 12h18"/><path d="M12 3c2.5 2.6 3.8 5.7 3.8 9S14.5 18.4 12 21c-2.5-2.6-3.8-5.7-3.8-9S9.5 5.6 12 3z"/></svg><select class="calbook-tz" id="cal-tz" aria-label="Timezone">${CAL_TZONES.map((z) => `<option value="${z}" ${z === calTz ? "selected" : ""}>${z}</option>`).join("")}</select></div>
+      </div>
+      <div class="card" style="margin-top:18px">
         <div class="section-title" style="margin-top:0">Booked meetings</div>
         ${meetings.length ? meetings.map((m) => {
           const l = leadById(m.leadId);
@@ -603,13 +632,26 @@ function renderCalendar() {
         }).join("") : `<div class="notice">No meetings booked yet.</div>`}
       </div>
     </div>
-    <div class="card">
-      <h3 style="margin-top:0">${esc((CAL_TYPES.find((t) => t.id === calEvent) || CAL_TYPES[1]).name)}</h3>
-      <p class="notice">Times are Eastern. Pick a day, then a time, then confirm — or book directly on Cal.com.</p>
-      <div class="days">${days.map((d, i) => `<button class="day ${calDay === i ? "sel" : ""}" data-calday="${i}">
-        <span>${d.toLocaleDateString("en-US", {weekday: "short"})}</span><b>${d.getDate()}</b>
-        <span>${d.toLocaleDateString("en-US", {month: "short"})}</span></button>`).join("")}</div>
-      <div class="slots">${SLOT_TIMES.map((t) => `<button class="slot ${calTime === t ? "sel" : ""}" data-caltime="${t}">${t}</button>`).join("")}</div>
+    <div class="calbook-main">
+      <div class="calbook-monthhead">
+        <h3>${esc(monthLabel)} <span>${esc(yearLabel)}</span></h3>
+        <div class="calbook-nav">
+          <button type="button" data-calmonth="prev" ${atCurrentMonth ? "disabled" : ""} aria-label="Previous month">‹</button>
+          <button type="button" data-calmonth="next" aria-label="Next month">›</button>
+        </div>
+      </div>
+      <div class="calbook-weekdays">${["SUN", "MON", "TUE", "WED", "THU", "FRI", "SAT"].map((d) => `<span>${d}</span>`).join("")}</div>
+      <div class="calbook-grid">${cells.map(({d, outside}) => {
+        const past = d < _calToday;
+        const sel = _calSameDay(d, calDate);
+        const isToday = _calSameDay(d, _calToday);
+        const nextLabel = outside && d.getDate() === 1 ? `<span class="calday-nextlabel">${esc(d.toLocaleDateString("en-US", {month: "short"}).toUpperCase())}</span>` : "";
+        return `<button type="button" class="calday ${sel ? "calday--sel" : ""} ${isToday ? "calday--today" : ""} ${outside ? "calday--outside" : ""}" data-caldate="${_calKey(d)}" ${outside || past ? "disabled" : ""}>${nextLabel}<span class="calday-num">${d.getDate()}</span><span class="calday-dot"></span></button>`;
+      }).join("")}</div>
+      <div class="calbook-slots">
+        <div class="calbook-slots-head">${esc(selLabel)}</div>
+        <div class="slots">${SLOT_TIMES.map((t) => `<button type="button" class="slot ${calTime === t ? "sel" : ""}" data-caltime="${t}">${t}</button>`).join("")}</div>
+      </div>
       <div class="grid2">
         <div class="field"><label>Book for lead</label>
           <select class="select" id="cal-lead">${(state.leads || []).map((l) => `<option value="${l.id}">${esc(l.business)}</option>`).join("")}</select></div>
@@ -619,22 +661,32 @@ function renderCalendar() {
         <button class="btn btn--primary" id="cal-confirm">Confirm booking</button>
         <button class="btn" id="cal-open">Book on Cal.com ↗</button>
       </div>
-      <p class="notice">Confirm saves the meeting here and in the call log. The live Cal.com booking itself happens on cal.com — this app does not hold a Cal.com API key.</p>
+      <p class="notice">Times are shown in ${esc(calTz)} (${esc(CAL_TZ_LABELS[calTz] || "")}). Confirm saves the meeting here and in the call log. The live Cal.com booking itself happens on cal.com — this app does not hold a Cal.com API key.</p>
+      <div class="calbook-foot">Cal.com</div>
     </div>
   </div>`;
 }
 function bindCalendar() {
   document.querySelectorAll("[data-caltype]").forEach((el) => el.onclick = () => { calEvent = el.dataset.caltype; render(); });
-  document.querySelectorAll("[data-calday]").forEach((el) => el.onclick = () => { calDay = Number(el.dataset.calday); render(); });
+  document.querySelectorAll("[data-caldate]").forEach((el) => el.onclick = () => {
+    const [yy, mm, dd] = el.dataset.caldate.split("-").map(Number);
+    calDate = new Date(yy, mm - 1, dd); render();
+  });
+  document.querySelectorAll("[data-calmonth]").forEach((el) => el.onclick = () => {
+    const dir = el.dataset.calmonth === "next" ? 1 : -1;
+    const nd = new Date(calMonth.y, calMonth.m + dir, 1);
+    calMonth = {y: nd.getFullYear(), m: nd.getMonth()}; render();
+  });
   document.querySelectorAll("[data-caltime]").forEach((el) => el.onclick = () => { calTime = el.dataset.caltime; render(); });
+  const tz = $("#cal-tz");
+  if (tz) tz.onchange = () => { calTz = tz.value; render(); };
   const open = $("#cal-open");
   if (open) open.onclick = () => window.open(CAL_LINK, "_blank");
   const confirm = $("#cal-confirm");
   if (confirm) confirm.onclick = async () => {
-    if (calDay === null || !calTime) { showToast("Pick a day and a time first."); return; }
+    if (!calDate || !calTime) { showToast("Pick a day and a time first."); return; }
     const type = CAL_TYPES.find((t) => t.id === (calEvent || "30min")) || CAL_TYPES[1];
-    const day = nextDays(14)[calDay];
-    const date = day.toLocaleDateString("en-US", {weekday: "long", month: "long", day: "numeric"});
+    const date = calDate.toLocaleDateString("en-US", {weekday: "long", month: "long", day: "numeric"});
     const leadId = $("#cal-lead") ? $("#cal-lead").value : (state.leads[0] || {}).id;
     await mutate("bookMeeting", {leadId, date, time: calTime, typeName: type.name});
     showToast("Meeting booked: " + date + " at " + calTime + " (" + type.name + "). Email is queued (Resend pending) — confirm on Cal.com if you want the live invite sent.");

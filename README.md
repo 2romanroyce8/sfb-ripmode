@@ -318,3 +318,43 @@ white asterisk/star orb (OrbMark) in the sidebar header next to "SFB Connect"
 - Honest limitation: the dashboard is behind login, so it could not be
   visually verified in this session without Rome's passcode. Rome must check
   the sidebar himself after a hard refresh.
+
+## Calendar tab — Cal.com booking layout (2026-11-20)
+Rome sent a Cal.com booking-page screenshot and asked for the Calendar
+tab to look like it. Rebuilt to that layout (not the reference's content):
+- Left event-detail panel: host avatar (RR initials) + "Roman Royce",
+  the 5 event-type picker, selected event title + description, duration,
+  Google Meet, and a timezone dropdown defaulting to America/New_York
+  (US zones only). No price — Rome's bookings are free.
+- Right side: month grid for the CURRENT month (November 2026), SUN–SAT
+  headers, dark date tiles, today marked with a dot, selected date as a
+  white tile with a black dot (as in the reference), prev/next month
+  arrows (prev disabled on the current month; past days and other-month
+  days are dimmed and disabled). Selecting a date shows that day's time
+  slots below the grid, then Book-for-lead, Confirm booking, and Book on
+  Cal.com — the existing booking flow, unchanged.
+- Real data only: Rome's 5 verified Cal.com event types (15 min meeting,
+  30 min meeting, Secret meeting, Six Figure Blueprints — Discovery Call,
+  Bingled — Website Strategy Call), booking link
+  https://cal.com/roman-royce/30min. NOTHING copied from the reference:
+  no "Ash", no "$20.00", no "Asia/Kuala Lumpur", no "Personalized Career
+  Consultation" / "Let's Redefine Your Career" copy, no November 2025.
+- Implementation: renderCalendar/bindCalendar in app.js now use a real
+  month grid (calMonth/calDate state, today selected by default) instead
+  of the old 14-day strip (nextDays() removed). New `.calbook*` /
+  `.calday*` CSS appended to ripmode.css (source) and style.css (served
+  file, same block). Asset versions bumped v=4 → v=5 in index.html so
+  browsers fetch the new app.js/style.css.
+- Verified 2026-11-20 ~14:16 UTC: deployed with deploy.py (KV binding
+  preserved, worker modified 14:16:10 UTC). A Node harness rendering the
+  real renderCalendar() passed 27 checks (all 5 event names, November
+  2026, 35 day tiles, Nov 20 selected + today-marked, no forbidden
+  reference strings, December navigation). Live fetch of
+  sixfigureblueprints.com/ripmode serves the v=5 page; served
+  /ripmode/app.js?v=5 and /ripmode/style.css?v=5 match local
+  byte-for-byte. Zero occurrences of the personal forwarding number in
+  the app/worker. No accounts created, logged in as, or modified; no E2E
+  run (nothing mutates state).
+- Honest limitation: the Calendar tab is behind login, so it could not be
+  visually verified in this session without Rome's passcode. Rome must
+  check the Calendar tab himself after a hard refresh.
