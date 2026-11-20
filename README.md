@@ -548,6 +548,35 @@ three can be on calls at the same time.
    setting them — but the dashboard must be hard-refreshed to pick up
    the new CALL path (the status check runs on login).
 
+### Test call box — owner only (2026-11-20)
+- RIP MODE has a small "Test call — owner only" box (number input + CALL),
+  rendered ONLY when the signed-in user is the owner (romanroyce). It is not
+  rendered at all for staff (not hidden with CSS — not in the DOM).
+- It dials the typed number through the EXACT same Twilio path as a lead
+  call: same token endpoint, same SDK device, same TwiML App + Function,
+  caller ID +1 239 349 9491. Same states (Dialing → Ringing → Connecting →
+  Connected with timer), live mic level, MUTE, KEYPAD, END CALL. No Google
+  Voice fallback for test calls — if Twilio is not live, it says so.
+- The typed number is NEVER saved: not to KV, leads, the Call Log,
+  conversations, session stats, or any file. It lives only in the input box
+  and a module-memory draft, both wiped when the call ends (or the attempt
+  fails). The outcome shows only in the dialer UI ("Test call ended —
+  Connected 00:37. Not logged anywhere."). The status line never echoes the
+  typed number. Rome's personal number must never be typed into any file,
+  test, or harness — the harness uses +15551234567.
+- Verified 2026-11-20 ~15:30 UTC: Node harness (/tmp/testcall-harness.js)
+  29/29 against the real app.js — owner sees the box, staff do not; invalid
+  numbers are rejected before dialling; the test call dials the typed number
+  via device.connect; its outcome is UI-only with zero logDisposition posts
+  and the input cleared; a lead call still logs exactly one disposition;
+  the test button is blocked during a lead call; zero occurrences of Rome's
+  personal number in the app. Deployed with deploy.py (KV binding preserved);
+  asset versions v=9 → v=10. Live fetch: /ripmode 200, served app.js?v=10
+  and style.css?v=10 match local byte-for-byte (sha256). /api/auth/check:
+  romanroyce hasAccount:true — KV intact, no accounts touched, NO NUMBER
+  DIALED. The box itself could not be visually verified without Rome's
+  passcode — he must hard-refresh, sign in, and use it himself.
+
 ### Setup checklist (in order — live calling is BLOCKED until all done)
 (a) Upgrade: Rome enters a card (or Google Pay) and clicks Upgrade in
     the open Twilio tab — Step 1 (Six Figure Blueprints LLC, 1200

@@ -59,6 +59,14 @@ let callState = "idle";
 let callStartTs = 0, callTimerId = null;
 let callAccepted = false, callError = "", callLogged = false, connectCancelled = false;
 let lastCallNote = "";
+// Owner-only test call (2026-11-20): isTestCall marks a call dialled from the
+// Test call box (a typed number, not a lead). A test call is never logged or
+// saved anywhere — its outcome shows only in the dialer UI. The typed number
+// itself lives only in testNumberDraft (module memory, cleared when the call
+// ends) and in the input box; it is never written to KV, leads, the Call Log,
+// conversations, session stats, or any file.
+let isTestCall = false;
+let testNumberDraft = "";
 let callAudioCtx = null, callAnalyser = null, callAnalyserRAF = null, analyserSource = null; // "standalone" | "call"
 
 const $ = (s) => document.querySelector(s);
@@ -244,6 +252,15 @@ function callOutcomeFor(o) {
   return { outcome: "no_answer", stat: "noAnswer" };
 }
 function callStatusLine() {
+  // Test calls never echo the typed number in the status line — the number
+  // is visible only in the input box Rome typed it into.
+  if (isTestCall) {
+    if (callState === "dialing") return "Dialing test number…";
+    if (callState === "ringing") return "Ringing — waiting for an answer…";
+    if (callState === "connected") return "Connected — " + fmtElapsed(callElapsed()) + ". Mute, keypad, script and DROP VM all work on this call.";
+    if (lastCallNote) return lastCallNote;
+    return "";
+  }
   const lead = (state && state.leads) ? state.leads[ripIndex] : null;
   if (callState === "dialing") return "Dialing " + (lead ? lead.phone : "") + "…";
   if (callState === "ringing") return "Ringing " + (lead ? lead.business : "") + " — waiting for an answer…";
@@ -261,6 +278,8 @@ function syncCallUI() {
     btn.textContent = active ? "END CALL" : "CALL";
     btn.classList.toggle("end", active);
   }
+  const tbtn = $("#test-call-btn");
+  if (tbtn) tbtn.textContent = (callState !== "idle" && isTestCall) ? "END CALL" : "CALL";
   const line = $("#call-status-line");
   if (line) { line.textContent = callStatusLine(); line.classList.toggle("hidden", !line.textContent); }
 }
@@ -314,14 +333,33 @@ async function checkTwilio() {
   if (currentTab === "rip") render();
   return twilioReady;
 }
+// Wipes the typed test number from both the draft and the live input box.
+// The number then exists nowhere — not in the DOM, not in memory.
+function clearTestInput() {
+  testNumberDraft = "";
+  const ti = $("#test-number"); if (ti) ti.value = "";
+}
 async function logCallEnd(lead, m) {
   try { await mutate("logDisposition", { leadId: lead.id, outcome: m.outcome, stat: m.stat }); }
   catch (e) { console.warn("Could not log call outcome", e); }
 }
+// Lead call: dials the selected lead's number.
 async function startTwilioCall(lead, retried) {
-  const to = String(lead.phone || "").replace(/[^\d+]/g, "");
-  if (!to) { showToast("This lead has no phone number on file."); return; }
+  return startTwilioCallTo(String(lead.phone || "").replace(/[^\d+]/g, ""), {retried: !!retried, isTest: false, lead});
+}
+// Owner-only test call: dials a typed number through the EXACT same Twilio
+// path as a lead call (same token endpoint, same SDK device, same TwiML App
+// and Function, same caller ID). The number is never logged or saved.
+async function startTestCall(to) {
+  return startTwilioCallTo(to, {isTest: true});
+}
+async function startTwilioCallTo(to, opts) {
+  const isTest = !!(opts && opts.isTest);
+  const retried = !!(opts && opts.retried);
+  const lead = (opts && opts.lead) || null;
+  if (!to) { showToast(isTest ? "Type a number to test-call first." : "This lead has no phone number on file."); return; }
   lastCallNote = "";
+  isTestCall = isTest;
   connectCancelled = false;
   callAccepted = false; callError = ""; callLogged = false;
   setCallState("dialing");
@@ -330,9 +368,11 @@ async function startTwilioCall(lead, retried) {
     device = await ensureTwilioDevice();
   } catch (e) {
     setCallState("idle");
+    if (isTest) { isTestCall = false; clearTestInput(); }
     lastCallNote = e.message || "Calling not set up yet.";
     if (currentTab === "rip") render();
-    showToast(lastCallNote + " Until Twilio is live, CALL opens Google Voice.");
+    // Test calls never fall back to Google Voice — there is nothing to open.
+    showToast(isTest ? lastCallNote : lastCallNote + " Until Twilio is live, CALL opens Google Voice.");
     return;
   }
   let call;
@@ -342,10 +382,11 @@ async function startTwilioCall(lead, retried) {
     // Stale token (older than 1 hour): drop the cached device and retry once with a fresh token.
     if (!retried && /token|expir|auth/i.test((e && e.message) || "")) {
       twilioDevice = null; twilioSdkPromise = null;
-      return startTwilioCall(lead, true);
+      return startTwilioCallTo(to, {isTest, retried: true, lead});
     }
     callError = (e && e.message) || "Call failed.";
     setCallState("idle");
+    if (isTest) { isTestCall = false; clearTestInput(); }
     lastCallNote = "Call failed — " + callError;
     if (currentTab === "rip") render();
     showToast(lastCallNote);
@@ -354,8 +395,15 @@ async function startTwilioCall(lead, retried) {
   if (connectCancelled) {
     try { call.disconnect(); } catch (_) {}
     setCallState("idle");
-    lastCallNote = "Call cancelled before it connected.";
-    if (!callLogged) { callLogged = true; logCallEnd(lead, { outcome: "dialed", stat: "dials" }); }
+    if (isTest) {
+      // Test call: outcome in the dialer UI only — never logged, never saved.
+      lastCallNote = "Test call cancelled before it connected. Not logged anywhere.";
+      isTestCall = false; clearTestInput();
+      syncCallUI();
+    } else {
+      lastCallNote = "Call cancelled before it connected.";
+      if (!callLogged) { callLogged = true; logCallEnd(lead, { outcome: "dialed", stat: "dials" }); }
+    }
     return;
   }
   activeCall = call;
@@ -387,12 +435,21 @@ async function endCall(how) {
     try { call.disconnect(); } catch (_) {}
   }
   setCallState("idle");
-  const lead = (state && state.leads) ? state.leads[ripIndex] : null;
-  if (!lead || callLogged) return;
-  callLogged = true;
   const m = how === "voicemail"
     ? { outcome: "voicemail", stat: "voicemail" }
     : callOutcomeFor({ accepted: wasAccepted, errorMsg: errMsg });
+  if (isTestCall) {
+    // Test call: outcome shows in the dialer UI only — never logged to the
+    // Call Log, never saved to KV, and the typed number is wiped.
+    const elapsed = m.outcome === "connected" ? " " + fmtElapsed(callElapsed()) : "";
+    lastCallNote = "Test call ended — " + (CALL_LABELS[m.outcome] || m.outcome) + elapsed + ". Not logged anywhere.";
+    isTestCall = false; clearTestInput();
+    syncCallUI();
+    return;
+  }
+  const lead = (state && state.leads) ? state.leads[ripIndex] : null;
+  if (!lead || callLogged) return;
+  callLogged = true;
   lastCallNote = "Call ended — " + (CALL_LABELS[m.outcome] || m.outcome) + ". Logged to the Call Log.";
   await logCallEnd(lead, m);
 }
@@ -604,6 +661,7 @@ function renderRip() {
   const leads = state.leads || [];
   const lead = leads[ripIndex] || null;
   if (!lead) return `<div class="notice">No leads yet. Add one in the Leads tab.</div>`;
+  const isOwner = roleFor(me) === "owner"; // Test call box: owner only — not rendered at all for staff (not hidden with CSS, not in the DOM)
   const calls = callsFor(lead.id);
   const last = calls[calls.length - 1];
   const s = state.sessionStats || {};
@@ -685,6 +743,15 @@ function renderRip() {
       </div>
       <button class="big-call${callState !== "idle" ? " end" : ""}" id="call-btn">${callState !== "idle" ? "END CALL" : "CALL"}</button>
       <button class="btn" id="text-btn" style="width:100%;margin-top:8px;padding:13px">TEXT</button>
+      ${isOwner ? `
+      <div style="margin-top:14px;border-top:1px solid var(--line);padding-top:12px">
+        <div class="section-title">Test call — owner only</div>
+        <div style="display:flex;gap:8px">
+          <input class="input" id="test-number" type="tel" inputmode="tel" autocomplete="off" placeholder="Enter a number to test-call" value="${esc(testNumberDraft)}" style="flex:1;min-width:0">
+          <button class="btn" id="test-call-btn">${callState !== "idle" && isTestCall ? "END CALL" : "CALL"}</button>
+        </div>
+        <p class="notice">Dials through Twilio from +1 239 349 9491, exactly like a lead call. The number is never saved — not to leads, the Call Log, or anywhere else.</p>
+      </div>` : ""}
     </div>
   </div>`;
 }
@@ -749,6 +816,26 @@ function bindRip() {
   };
   const textBtn = $("#text-btn");
   if (textBtn) textBtn.onclick = () => openGoogleVoice("text", lead);
+  // Owner-only test call box (rendered only for the owner — see renderRip).
+  // Dials the typed number through the same Twilio path as a lead call, with
+  // NO Google Voice fallback and NO logging: the number is never saved.
+  const testInput = $("#test-number");
+  if (testInput) testInput.addEventListener("input", () => { testNumberDraft = testInput.value; });
+  const testBtn = $("#test-call-btn");
+  if (testBtn) testBtn.onclick = async () => {
+    if (callState !== "idle") {
+      if (isTestCall) { endCall("local"); return; } // END CALL on the test call
+      showToast("A lead call is in progress — end it before starting a test call.");
+      return;
+    }
+    const to = String((testInput ? testInput.value : "") || "").replace(/[^\d+]/g, "");
+    if (!/^\+?\d{7,15}$/.test(to)) { showToast("Type a full phone number to test-call, e.g. +1 555 123 4567."); return; }
+    if (!twilioReady) {
+      const ok = await checkTwilio();
+      if (!ok) { showToast("In-dashboard calling is not set up yet — the test call needs Twilio live."); return; }
+    }
+    await startTestCall(to);
+  };
 }
 
 async function startMic() {
