@@ -86,8 +86,11 @@ no npm, no build, no package scripts).
 
 Deliberate deviations (nothing else):
 - Brand mark: the template's `/brand/sfb-blueprint-mark.png` was only in
-  the blocked zip and was never uploaded individually, so the orb slot
-  uses the approved SFB white star SVG. Brand text is "SFB Connect /
+  the blocked zip and was never uploaded individually — but on 2026-11-20
+  the same asset was fetched from the live sixfigureblueprints.com
+  homepage (`/brand/sfb-blueprint-mark.png`, the header logo) and is now
+  used verbatim in the LOGIN (embedded as a data URI; source in `brand/`).
+  The dashboard sidebar still uses the white star orb (template shell). Brand text is "SFB Connect /
   RIP MODE dialer" (the template's staff Brand reads "Sales Team /
   Universal employee workspace" — the dialer keeps its own identity).
 - CALL / success green (#34d399, the template's base --green) is kept
@@ -101,7 +104,7 @@ Deliberate deviations (nothing else):
   workspace switching/creation) say so plainly instead of faking a page.
   Logout works for real.
 
-## UI (2026-11-20 redesign)
+## UI (2026-11-20 redesign — superseded, see Login v3 below)
 Black split-screen login in the reference style: left black panel with
 "SFB CONNECT" and a white asterisk star, right dark panel with "Login",
 underline Username/Password fields, round white SIGN IN button.
@@ -131,3 +134,63 @@ autocomplete="off" / "new-password" and the visible "Username, not your
 email" hint; if Chrome autofills an email, submit rejects "@" and the
 user can tap and retype. Passcode inputs filter to digits only as typed
 (max 4), never clearing the field.
+
+## Login v3 — full-screen, SFB logo, Enter can never 404 (2026-11-20)
+Rome signed in, pressed Enter, and landed on the sixfigureblueprints.com
+404 ("This Page Isn't Part of the Build"). Root cause, confirmed live:
+a native form GET submit navigates to `/ripmode?username=...&passcode=...`,
+and any `/ripmode` URL with a query string 404s — verified by curl
+(plain `/ripmode` 200, `/ripmode?test=1` 404). The Cloudflare routes
+(`sixfigureblueprints.com/ripmode`, `sixfigureblueprints.com/ripmode/*`)
+never deliver a query-string URL to this worker at all (the worker itself
+serves the app for any `/ripmode` path regardless of query), so the fix
+has to be in the app: the login form can never navigate, period.
+- The form carries inline `onsubmit="return false"` +
+  `action="javascript:void(0)"` in index.html, so even if app.js is stale
+  or fails to load, Enter can never trigger a native navigation. app.js
+  still handles submit with preventDefault + fetch, and the dashboard
+  renders in place on the same page — no reload, no redirect, no query
+  string, ever.
+- Second bug fixed in the same pass: `doLogin()` set `doLogin.busy = true`
+  BEFORE validation and returned early on validation errors without
+  resetting it, permanently locking Sign in until a reload. Validation
+  now runs first; busy is only set once the attempt is real.
+- Rome's account state as found: `romanroyce` was `hasAccount:false` —
+  his signup never completed server-side (the navigation aborted the API
+  call before it ran), so NO passcode of his exists anywhere. He must
+  sign up fresh: username romanroyce + a 4-digit passcode of his choice.
+  Nothing of his was reset, cleared, or re-created. (All three users were
+  hasAccount:false before and after this fix; the E2E test account was
+  deleted.)
+- Logo: the white star orb is GONE from the login. It is now the actual
+  sixfigureblueprints.com logo — the white cube/blueprint mark from the
+  site header's own asset (`/brand/sfb-blueprint-mark.png`, fetched from
+  the live homepage 2026-11-20) + "SIX FIGURE BLUEPRINTS" wordmark,
+  embedded as a data URI in index.html so the login never depends on the
+  homepage worker. The source PNG is kept in `brand/` (cropped to the
+  mark only; the mark itself is verbatim). The dashboard sidebar still
+  uses the template's star orb (template shell, untouched).
+- Layout: the login is now FULL-SCREEN — no card, no border, the content
+  column (logo, wordmark, "Yooo, welcome back!", Username + 4-digit
+  Passcode, full-width white pill Sign in, hints, Google Voice footer)
+  fills the viewport (100dvh) with breathing room and nothing clipped or
+  cropped, desktop and mobile. The inline critical CSS in index.html was
+  updated to match, so a style.css failure still renders full-screen dark.
+- Known route-level quirk that REMAINS: `/ripmode?anything` still 404s
+  at the Cloudflare route level (no route/DNS change was made, per the
+  brief). It can no longer be triggered from inside the app — but a
+  bookmarked or pasted link with a query string would still 404. The
+  live-browser check for the parent: type a non-allowlisted username +
+  any 4 digits, press Enter — it must show a plain rejection and STAY on
+  /ripmode, never 404.
+- Verified 2026-11-20 ~13:27 UTC: deployed with deploy.py (KV binding
+  preserved, worker modified 13:27:25 UTC); live text fetch confirms the
+  new login serves (SFB logo data URI, onsubmit guard, 100dvh, "Yooo,
+  welcome back!", 4-digit passcode; zero `login-orb`); E2E as temporary
+  loganwells / 4-digit passcode passed (signup 200, duplicate 400, wrong
+  401, short 401, login 200, state loads with Jax + Performance, logout
+  200, post-logout state 401) and the test user + both sessions were
+  deleted from KV — all three users confirmed hasAccount:false after
+  (one stale KV read briefly showed loganwells true right after the
+  delete; three re-checks after propagation all show false). Zero
+  occurrences of the personal forwarding number in the app/worker.

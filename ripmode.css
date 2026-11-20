@@ -11,17 +11,17 @@
 button{cursor:pointer}
 input,select,textarea{font-family:inherit}
 
-/* ---------- login: dark centred card (2026-11-20) ----------
-   Layout/style from the reference: dark page, centred card, small orb
-   logo top-centre, "Yooo, welcome back!", rounded dark fields, full-width
-   white pill Sign in. Rules are scoped under #login-screen so they win
-   over the template's own .login-* rules. */
-#login-screen{display:flex;min-height:100vh;background:#080808;align-items:center;justify-content:center;padding:24px 16px}
-.login-page{width:100%;max-width:560px}
-.login-card{background:#111;border:1px solid #292929;border-radius:20px;padding:36px 32px 28px;text-align:center;box-shadow:0 24px 80px rgba(0,0,0,.6)}
-#login-screen .login-orb{width:56px;height:56px;margin:0 auto 20px;background:#262626;border:1px solid #343434;border-radius:14px;display:flex;align-items:center;justify-content:center}
-#login-screen .login-orb svg{width:34px;height:34px}
-#login-screen .login-brand{font-size:11px;font-weight:700;letter-spacing:.22em;color:#8a8a8a;text-transform:uppercase;margin:0 0 14px}
+/* ---------- login: dark FULL-SCREEN (2026-11-20) ----------
+   No card, no border — the login fills the whole viewport. Logo is the
+   sixfigureblueprints.com logo (cube mark + wordmark), fully visible with
+   breathing room, never cropped. Rules are scoped under #login-screen so
+   they win over the template's own .login-* rules. */
+#login-screen{display:flex;min-height:100vh;min-height:100dvh;background:#080808;align-items:center;justify-content:center;padding:40px 20px;box-sizing:border-box}
+.login-page{width:100%;max-width:480px;margin:auto}
+.login-card{background:transparent;border:0;border-radius:0;padding:0;text-align:center;box-shadow:none}
+#login-screen .login-logo{width:88px;height:auto;display:block;margin:0 auto 18px}
+#login-screen .login-wordmark{font-size:13px;font-weight:700;letter-spacing:.32em;color:#fff;margin:0 0 10px}
+#login-screen .login-brand{font-size:11px;font-weight:700;letter-spacing:.22em;color:#8a8a8a;text-transform:uppercase;margin:0 0 18px}
 #login-screen .login-card h1{font-size:30px;font-weight:600;letter-spacing:-.01em;margin:0 0 6px;color:#f5f5f5}
 #login-screen .login-sub{color:#9a9a9a;margin:0 0 24px;font-size:14px}
 #login-screen .login-sub b{color:#e5e5e5;font-weight:600}
@@ -106,9 +106,9 @@ textarea.input{min-height:80px;resize:vertical}
 .rowlink{cursor:pointer}
 .rowlink:hover td{background:var(--panel-2)}
 
-/* small screens: card tightens up */
+/* small screens: login tightens up, still full-screen, nothing clipped */
 @media(max-width:820px){
-  #login-screen{padding:16px 12px}
-  .login-card{padding:28px 20px}
+  #login-screen{padding:32px 16px}
+  #login-screen .login-logo{width:76px}
   .login-card h1{font-size:26px}
 }

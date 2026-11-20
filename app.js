@@ -91,12 +91,14 @@ async function checkSession() {
 }
 
 async function doLogin() {
-  if (doLogin.busy) return; // form submit + Enter can double-fire — one attempt at a time
-  doLogin.busy = true;
   const username = $("#login-username").value.trim().toLowerCase();
   const passcode = $("#login-passcode").value;
   const confirm = $("#login-confirm").value;
   const err = $("#login-error");
+  // Validate BEFORE setting doLogin.busy. The old order set busy=true first
+  // and returned early on validation errors without resetting it, which
+  // permanently locked the login until a page reload (any Enter with an
+  // empty/invalid passcode, or an email in Username, bricked Sign in).
   if (username.includes("@")) {
     err.textContent = "Use your username, not your email — romanroyce, loganwells, or braylengarrett.";
     err.className = "error"; return;
@@ -106,6 +108,8 @@ async function doLogin() {
     err.className = "error"; return;
   }
   if (!/^\d{4}$/.test(passcode)) { err.textContent = "Enter a 4-digit passcode."; err.className = "error"; return; }
+  if (doLogin.busy) return; // form submit + Enter can double-fire — one attempt at a time
+  doLogin.busy = true;
   $("#login-btn").disabled = true;
   try {
     const status = await api("/auth/check", "POST", {username});
@@ -723,7 +727,11 @@ function bindTab() {
 
 /* The Sign In button is a submit button inside #login-form, so the form's
    submit is the single entry point (Enter key included) — no separate
-   click/keydown handlers, which would double-fire doLogin. */
+   click/keydown handlers, which would double-fire doLogin. The form also
+   carries inline onsubmit="return false" + action="javascript:void(0)" in
+   index.html: even if this file is stale or fails to load, Enter can never
+   trigger a native navigation (a GET to /ripmode?username=... 404s at the
+   Cloudflare route level — that is what stranded Rome on the homepage 404). */
 const loginForm = $("#login-form");
 if (loginForm) loginForm.addEventListener("submit", (e) => { e.preventDefault(); doLogin(); });
 $("#login-username").addEventListener("input", async (e) => {
