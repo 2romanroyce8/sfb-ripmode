@@ -578,13 +578,16 @@ three can be on calls at the same time.
   passcode — he must hard-refresh, sign in, and use it himself.
 
 ### Setup checklist (in order — live calling is BLOCKED until all done)
-(a) Upgrade: Rome enters a card (or Google Pay) and clicks Upgrade in
-    the open Twilio tab — Step 1 (Six Figure Blueprints LLC, 1200
-    Brickell Ave, Miami) and Step 2 ($20 balance, auto-recharge on)
-    are already done; Step 3 Payment is the remaining step. Trial has
-    4 days left.
-(b) Verify +1 737 232 4091 is the calling number after upgrade (or buy one).
-(c) API key + TwiML App + Function exist; all four env vars set on the worker.
+(a) Upgrade: DONE 2026-11-20 ~10:01 ET — Rome paid, account Active
+    pay-as-you-go, balance $20.00.
+(b) Number: DONE 2026-11-20 ~10:11 ET — +1 239 349 9491 (North Fort Myers,
+    FL, $1.15/mo) bought and in inventory. The old trial number did NOT
+    survive the upgrade.
+(c) API key + TwiML App + Function exist; all four env vars set on the
+    worker. PARTIALLY DONE, then broken — see "Vars wiped by the v=10
+    deploy" below. As of ~10:37 ET the worker has TWILIO_ACCOUNT_SID and
+    TWILIO_API_KEY_SECRET only; TWILIO_API_KEY_SID and TWILIO_TWIML_APP_SID
+    still need to be re-supplied (values exist only in the Twilio console).
 (d) Test call to Rome only, to his confirmed phone, before any lead is dialed.
 
 ### Known limits (honest)
@@ -615,3 +618,57 @@ three can be on calls at the same time.
   intact, no accounts touched, no E2E run, NO NUMBER DIALED.
 - NOT claimed: a real call has not been made. Live calling is blocked
   until the four checklist steps above are done.
+
+### Vars wiped by the v=10 deploy — root cause + fix (2026-11-20 ~10:33–10:37 ET)
+- SYMPTOM: Rome hit the Test call box and got "In-dashboard calling is not
+  set up yet — the test call needs Twilio live", and the dialer showed
+  "Calling via Google Voice until Twilio is live" — even though all four
+  Twilio vars had been set in the Cloudflare dashboard at ~10:20 ET.
+- ROOT CAUSE (proven via the Cloudflare API, GET .../workers/scripts/
+  sfb-ripmode-router/settings): a script upload REPLACES the worker's
+  bindings. The old deploy.py uploaded metadata with ONLY the KV binding,
+  so the v=10 deploy (run AFTER the dashboard vars were set) silently
+  wiped the three plain-text vars — TWILIO_ACCOUNT_SID, TWILIO_API_KEY_SID,
+  TWILIO_TWIML_APP_SID. Only TWILIO_API_KEY_SECRET survived, because
+  secrets live outside script metadata. /api/voice/status then returned
+  configured:false. A second, smaller bug made it stick: checkTwilio() in
+  app.js cached a `false` result for the whole page lifetime
+  (`if (twilioReady !== null) return twilioReady`), so one check run while
+  the vars were missing made the entire session believe Twilio was dead.
+- FIX (deployed v=11, 2026-11-20 ~15:37 UTC):
+  1. deploy.py now GETs the live worker's settings first and re-sends every
+     existing binding (KV + plain-text vars) in the upload metadata, so a
+     deploy can never wipe a var again. Secrets are deliberately excluded
+     from upload metadata (the API rejects a secret binding without a text
+     value) — they persist independently and are left untouched. Plain-text
+     vars can also be supplied as environment variables at deploy time
+     (e.g. TWILIO_ACCOUNT_SID=AC... python3 deploy.py); values are never
+     printed. RULE: never deploy with cf.py worker-put or the old deploy.py
+     after vars are set — only this deploy.py.
+  2. app.js checkTwilio() now caches ONLY `true`. A `false` is re-checked
+     against /api/voice/status on every CALL / test-call attempt, so fixing
+     the server takes effect mid-session without a fresh login. The lead
+     CALL handler re-checks on every attempt instead of only when
+     twilioReady === null.
+  3. TWILIO_ACCOUNT_SID was restored via the fixed deploy.py (value known).
+     Verified after deploy: live settings show RIPMODE_KV,
+     TWILIO_ACCOUNT_SID (plain_text) and TWILIO_API_KEY_SECRET
+     (secret_text) — deploy did not wipe anything.
+- STILL BLOCKED (values exist nowhere on this machine — do NOT guess them):
+  TWILIO_API_KEY_SID and TWILIO_TWIML_APP_SID were wiped with the v=10
+  deploy and cannot be recovered from any file, log, or API here. A browser
+  task must read them from the Twilio console (API keys page / TwiML Apps
+  page) and set them in the Cloudflare dashboard (Workers ->
+  sfb-ripmode-router -> Settings -> Variables), or pass them as env vars
+  to the fixed deploy.py. Until both are set, /api/voice/status stays
+  configured:false and CALL keeps falling back to Google Voice — by design,
+  never a fake dial.
+- VERIFIED: Node harness (/tmp/checktwilio2-harness.js) 9/9 against the
+  real app.js — false never cached, status re-fetched on every attempt,
+  test call blocked while unconfigured then dials in the same session once
+  the server reports configured, lead CALL re-checks instead of falling
+  straight to Google Voice; original test-call harness still 29/29.
+  Live fetch: /ripmode 200 serving v=11, served app.js?v=11 and
+  style.css?v=11 match local byte-for-byte (sha256). /api/voice/status
+  without a session returns 401 as before. NO NUMBER DIALED. Zero
+  occurrences of Rome's personal number in any file.

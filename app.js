@@ -50,8 +50,10 @@ let readyOn = false;      // READY toggle state (survives re-renders; the pill i
 /* ---------- Twilio in-dashboard calling (2026-11-20) ----------
    callState: "idle" | "dialing" | "ringing" | "connected" | "ended".
    The call object lives here (module scope) so re-renders never drop it.
-   twilioReady: null = not checked yet, true = token endpoint OK,
-   false = not configured — CALL falls back to Google Voice. */
+   twilioReady: null = not checked yet, true = token endpoint OK (cached),
+   false = not configured / check failed — NEVER cached (2026-11-20 fix:
+   a stale false made the whole session believe Twilio was dead even after
+   the server was fixed). A false result is re-checked on every CALL. */
 let twilioReady = null;
 let twilioDevice = null, twilioSdkPromise = null;
 let activeCall = null;
@@ -324,8 +326,14 @@ async function ensureTwilioDevice() {
   return twilioSdkPromise;
 }
 // Cheap check (no token minted): is Twilio configured on the server?
+// Only a `true` result is ever cached. A `false` (not configured yet, or a
+// transient failure) is NOT cached — every CALL / test-call attempt re-checks
+// /api/voice/status, so fixing the server config takes effect immediately
+// without a fresh login. (2026-11-20 root cause: the v=10 deploy wiped the
+// plain-text worker vars, the first status check cached false, and the whole
+// session then believed Twilio was dead for its entire lifetime.)
 async function checkTwilio() {
-  if (twilioReady !== null) return twilioReady;
+  if (twilioReady === true) return true;
   try {
     const r = await api("/voice/status", "GET");
     twilioReady = !!r.configured;
@@ -805,10 +813,11 @@ function bindRip() {
   if (callBtn) callBtn.onclick = async () => {
     if (callState !== "idle") { endCall("local"); return; } // END CALL
     if (twilioReady) { await startTwilioCall(lead); return; }
-    if (twilioReady === null) {
-      const ok = await checkTwilio();
-      if (ok) { await startTwilioCall(lead); return; }
-    }
+    // Not known-live: re-check the server status on EVERY attempt (a false
+    // is never cached — see checkTwilio). Only if it is still not ready do
+    // we fall back to Google Voice.
+    const ok = await checkTwilio();
+    if (ok) { await startTwilioCall(lead); return; }
     // Google Voice fallback (Twilio not configured yet) — same as before:
     // log the dial, then open Google Voice. The status line says so plainly.
     await mutate("logDisposition", {leadId: lead.id, outcome: "dialed", stat: "dials", dialOnly: true});
