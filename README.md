@@ -417,29 +417,36 @@ with the Messages UI inside it, blue iMessage bubbles, same functions.
   rounded frame, thin bezel, Dynamic Island, side buttons, status bar
   (9:41 + signal/wifi/battery), home indicator bar. The phone is a
   FRAME around the existing working UI, not a picture of one.
-- Inside the screen: "Messages" list (avatar initials, bold name, grey
-  preview, time, blue unread dot) and "Recents" list (iPhone Phone
-  Recents style) switch with a segmented control at the top of the
-  screen (`phoneView` state in app.js). Tapping a conversation opens
-  its thread inside the phone (iOS thread header: back chevron, avatar,
-  name, phone · N calls logged); back returns to the list; tapping a
-  Recents row opens that lead's thread. Typing + Send saves to that
+- Inside the screen: ONE unified list (2026-11-20, replaces the old
+  Messages/Recents segmented split — `phoneView` is gone). Each lead
+  appears once, sorted most recent first, showing its latest activity:
+  latest message text, or latest call type + outcome ("↗ Outgoing call
+  · Dialed", "↙ Missed call · No answer" in red), with avatar initials,
+  bold name, grey preview, time, blue unread dot. An iOS search bar
+  sits under the "Messages" title (rounded grey field, magnifier,
+  "Search" placeholder, × clear button): typing filters the list live
+  by lead name / phone / message text / call outcome, with no re-render
+  so the input keeps focus; no match shows an honest "No results. Try
+  a different search." Tapping a row opens its thread inside the phone
+  (iOS thread header: back chevron, avatar, name, phone · N calls
+  logged); back returns to the list. Typing + Send saves to that
   lead's thread (same `#chat-input` / `#chat-send` ids and `addMessage`
   behaviour). Messages are iMessage bubbles — outgoing blue on the
   right, incoming grey on the left — with centred grey timestamps and
   calls as centred grey system rows. The Google Voice thread note
   stays ("Outbound texts go through Google Voice — use the TEXT button
   in RIP MODE to send them.").
-- Real data only: Jax's 2 real Dialed calls (Nov 20, 2026, 2:26 PM +
-  2:27 PM) show exactly as logged; no messages exist yet, so threads
-  show the honest empty state until Rome types one. Nothing invented.
-  The phone is always dark (iOS Messages dark), whatever the dashboard
-  appearance toggle is set to.
+- Real data only: Jax's real Dialed calls (Nov 20, 2026, 2:26 PM +
+  2:27 PM + 2:30 PM — 3 logged) show exactly as logged; no messages
+  exist yet, so threads show the honest empty state until Rome types
+  one. Nothing invented. The phone is always dark (iOS Messages dark),
+  whatever the dashboard appearance toggle is set to.
 - Verified 2026-11-20: `node --check` clean; a Node harness loading the
-  real app.js passed 42/42 checks (phone chrome, Messages + Recents
-  lists, thread with both real sys rows, GV note kept, no invented
-  content, both removals below). Deployed with deploy.py (KV binding
-  preserved); asset versions bumped v=6 → v=7.
+  real app.js in a fake DOM passed 36/36 checks (unified list, each lead
+  once, recency sort, search by name/phone/message/outcome, clear
+  restores, thread with all 3 real sys rows, GV note kept, no invented
+  content). Deployed with deploy.py (KV binding preserved); asset
+  versions bumped v=7 → v=8.
 - Honest limitation: the Call Log tab is behind login, so the phone
   mockup could not be visually verified in this session without Rome's
   passcode. Rome must hard-refresh and check the Call Log tab himself.

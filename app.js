@@ -34,7 +34,7 @@ let calDate = new Date(_calToday); // selected day, defaults to today
 let calTz = "America/New_York";
 const CAL_TZ_LABELS = {"America/New_York": "Eastern", "America/Chicago": "Central", "America/Denver": "Mountain", "America/Los_Angeles": "Pacific", "America/Phoenix": "Mountain (no DST)"};
 let activeConv = null;    // lead id for call-log conversation view
-let phoneView = "msgs";  // inside the iPhone mockup: "msgs" (Messages list) or "calls" (Recents list)
+let phoneSearch = "";    // live filter text for the unified Call Log list inside the iPhone mockup
 let micStream = null, micLevel = 0, micOn = false, muted = false;
 
 const $ = (s) => document.querySelector(s);
@@ -708,9 +708,11 @@ function bindCalendar() {
    Rendered inside a CSS mock iPhone 18 (2026-11-20): the phone is a
    FRAME around the existing working UI, not a picture of one. Same
    functions as before — tap a conversation to open its thread, back
-   returns to the list, typing + Send saves to that lead's thread, tap a
-   Recents row opens that lead's thread. Messages list and Recents list
-   switch with the segmented control at the top of the phone screen.
+   returns to the list, typing + Send saves to that lead's thread.
+   ONE unified list (2026-11-20): Messages and Recents are merged — each
+   lead appears once, showing its latest activity (latest message text,
+   or latest call type + outcome), sorted most recent first, with an iOS
+   search bar on top that filters live by name / phone / message / call.
    All data is real: calls/messages come from state, nothing invented. */
 function iphoneChrome(inner) {
   return `
@@ -728,8 +730,23 @@ function iphoneChrome(inner) {
     </div>
   </div>`;
 }
+/* Latest activity for one lead, for the unified Call Log list: whichever
+   is newer, the latest message or the latest call. Stored timestamps are
+   "Nov 20, 2026" + "2:30 PM" strings — parsed for comparison only. */
+function latestActivityFor(leadId) {
+  const calls = callsFor(leadId);
+  const conv = convFor(leadId);
+  const msgs = (conv && conv.messages) || [];
+  const lastCall = calls[calls.length - 1] || null;
+  const lastMsg = msgs[msgs.length - 1] || null;
+  const stamp = (d, t) => { const v = Date.parse((d || "") + " " + (t || "")); return isNaN(v) ? 0 : v; };
+  const callStamp = lastCall ? stamp(lastCall.date, lastCall.time) : 0;
+  const msgStamp = lastMsg ? stamp(lastMsg.date, lastMsg.time) : 0;
+  if (lastMsg && msgStamp >= callStamp) return {kind: "msg", msg: lastMsg, at: msgStamp};
+  if (lastCall) return {kind: "call", call: lastCall, at: callStamp};
+  return null;
+}
 function renderCallLog() {
-  const logs = [...(state.callLogs || [])].reverse();
   const leads = state.leads || [];
   if (activeConv) {
     const lead = leadById(activeConv);
@@ -752,37 +769,64 @@ function renderCallLog() {
       </div>
       <p class="notice iphone-note">Messages you type here are saved to this lead's thread. Outbound texts go through Google Voice — use the TEXT button in RIP MODE to send them.</p>`);
   }
-  const seg = `
-    <div class="iphone-seg" role="tablist">
-      <button type="button" data-phoneview="msgs" class="${phoneView === "msgs" ? "sel" : ""}">Messages</button>
-      <button type="button" data-phoneview="calls" class="${phoneView === "calls" ? "sel" : ""}">Recents</button>
+  const searchBar = `
+    <div class="iphone-search">
+      <svg width="15" height="15" viewBox="0 0 15 15" fill="none" aria-hidden="true"><circle cx="6.5" cy="6.5" r="5" stroke="#8e8e93" stroke-width="1.6"/><path d="M10.5 10.5L14 14" stroke="#8e8e93" stroke-width="1.6" stroke-linecap="round"/></svg>
+      <input id="phone-search" type="text" placeholder="Search" value="${esc(phoneSearch)}" autocomplete="off" aria-label="Search conversations">
+      <button type="button" class="iphone-search-clear" id="phone-search-clear" aria-label="Clear search" style="display:${phoneSearch ? "flex" : "none"}">×</button>
     </div>`;
-  const msgsList = `
-      <div class="conv-list">${leads.map((l) => {
-        const conv = convFor(l.id);
-        const lastMsg = (conv && conv.messages && conv.messages[conv.messages.length - 1]) || null;
-        const n = callsFor(l.id).length;
-        const lastCall = callsFor(l.id).slice(-1)[0] || null;
-        const lastAt = lastMsg ? whenShort(lastMsg.date, lastMsg.time) : (lastCall ? whenShort(lastCall.date, lastCall.time) : "");
-        return `<button class="conv-item" data-openconv="${l.id}">
+  const rows = leads.map((l) => ({lead: l, act: latestActivityFor(l.id)}))
+    .sort((a, b) => (b.act ? b.act.at : 0) - (a.act ? a.act.at : 0));
+  const list = `
+      <div class="conv-list">${rows.map(({lead: l, act}) => {
+        const missed = act && act.kind === "call" && isMissedCall(act.call);
+        const preview = !act ? "No calls or messages yet"
+          : act.kind === "msg" ? act.msg.text.slice(0, 60)
+          : (missed ? "↙ Missed call" : "↗ Outgoing call") + " · " + callLabel(act.call.outcome);
+        const at = act ? whenShort(act.kind === "msg" ? act.msg.date : act.call.date, act.kind === "msg" ? act.msg.time : act.call.time) : "";
+        const hay = [l.business, l.phone,
+          ...callsFor(l.id).map((c) => callLabel(c.outcome) + " " + (isMissedCall(c) ? "missed call" : "outgoing call")),
+          ...((convFor(l.id) || {messages: []}).messages || []).map((m) => m.text)].join(" ").toLowerCase();
+        return `<button class="conv-item" data-openconv="${l.id}" data-search="${esc(hay)}">
           <span class="im-avatar">${esc(initialsFor(l.business))}</span>
-          <span class="im-conv-main"><b>${esc(l.business)}</b><span class="im-preview">${lastMsg ? esc(lastMsg.text.slice(0, 60)) : (n ? n + " call" + (n === 1 ? "" : "s") + " logged" : "No calls or messages yet")}</span></span>
-          <span class="im-conv-right">${lastAt ? `<span class="im-time">${esc(lastAt)}</span>` : ""}${(l.stage || "New") === "New" ? `<span class="im-unread" title="New lead"></span>` : ""}</span></button>`;
-      }).join("")}</div>`;
-  const callsList = `
-      <div class="recents">${logs.length ? logs.map((c) => { const l = leadById(c.leadId); const missed = isMissedCall(c); return `<button class="recent-item" data-openconv="${c.leadId}">
-        <span class="recent-main"><b class="${missed ? "missed" : ""}">${esc(l ? l.business : "—")}</b><span class="recent-sub ${missed ? "missed" : ""}">${missed ? "↙ Missed call" : "↗ Outgoing call"} · ${esc(callLabel(c.outcome))}</span></span>
-        <span class="recent-right"><span class="recent-time">${esc(whenShort(c.date, c.time))}</span><span class="recent-chev">›</span></span></button>`; }).join("") : `<div class="notice iphone-empty">No calls logged yet. Dial in RIP MODE and log the outcome.</div>`}</div>`;
+          <span class="im-conv-main"><b>${esc(l.business)}</b><span class="im-preview${missed ? " missed" : ""}">${esc(preview)}</span></span>
+          <span class="im-conv-right">${at ? `<span class="im-time">${esc(at)}</span>` : ""}${(l.stage || "New") === "New" ? `<span class="im-unread" title="New lead"></span>` : ""}</span></button>`;
+      }).join("")}</div>
+      <div class="notice iphone-empty iphone-noresults" style="display:none">No results. Try a different search.</div>`;
   return iphoneChrome(`
-      <div class="iphone-title">${phoneView === "calls" ? "Recents" : "Messages"}</div>
-      ${seg}
-      <div class="iphone-body">${phoneView === "calls" ? callsList : msgsList}</div>`);
+      <div class="iphone-title">Messages</div>
+      ${searchBar}
+      <div class="iphone-body">${list}</div>`);
 }
 function bindCallLog() {
-  document.querySelectorAll("[data-phoneview]").forEach((el) => el.onclick = () => { phoneView = el.dataset.phoneview; render(); });
   const back = $("#back-convs");
   if (back) back.onclick = () => { activeConv = null; render(); };
   document.querySelectorAll("[data-openconv]").forEach((el) => el.onclick = () => { activeConv = el.dataset.openconv; render(); });
+  // iOS search: filters the unified list LIVE without a re-render, so the
+  // input keeps focus while typing. Matches lead name / phone / message
+  // text / call outcome (each row carries them in data-search). The query
+  // survives re-renders (thread open/close) via phoneSearch.
+  const search = $("#phone-search");
+  const applySearch = () => {
+    const q = (search ? search.value : phoneSearch).trim().toLowerCase();
+    phoneSearch = search ? search.value : "";
+    let shown = 0;
+    document.querySelectorAll(".iphone-body .conv-item").forEach((el) => {
+      const hit = !q || (el.dataset.search || "").includes(q);
+      el.style.display = hit ? "" : "none";
+      if (hit) shown++;
+    });
+    const empty = $(".iphone-noresults");
+    if (empty) empty.style.display = shown ? "none" : "";
+    const clear = $("#phone-search-clear");
+    if (clear) clear.style.display = phoneSearch ? "flex" : "none";
+  };
+  if (search) {
+    search.addEventListener("input", applySearch);
+    if (phoneSearch) applySearch();
+  }
+  const clear = $("#phone-search-clear");
+  if (clear) clear.onclick = () => { if (search) search.value = ""; phoneSearch = ""; applySearch(); if (search) search.focus(); };
   const send = $("#chat-send");
   const sendMsg = async () => {
     const inp = $("#chat-input");
