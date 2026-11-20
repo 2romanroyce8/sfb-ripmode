@@ -14,9 +14,11 @@ Cal.com-mirrored Calendar, Call Log + conversations, Connections.
   sign up again. The passcode field is numeric-only (inputmode="numeric",
   maxlength 4); anything that is not exactly 4 digits is rejected with
   "Enter a 4-digit passcode".
-- Calling/texting via Google Voice (213) 495-3536 — free, no Twilio.
-  Google Voice has no API, so CALL/TEXT open Google Voice; nothing here
-  auto-dials, auto-plays a script, auto-drops voicemail, or auto-sends SMS.
+- Calling: in-dashboard via Twilio Voice (2026-11-20, see "In-dashboard
+  calling — Twilio Voice" below). TEXT stays Google Voice (213) 495-3536 —
+  free, no API, so TEXT opens Google Voice with the message ready; nothing
+  here auto-sends SMS. Until Twilio is configured on the server, CALL falls
+  back to opening Google Voice and says so plainly — never a fake dial.
   Meeting emails are queued until Resend is wired; SMS opens Google Voice
   with the text ready — never claimed as sent automatically.
 - Login has NO <form> (2026-11-20): Sign in is a `type="button"` button
@@ -464,3 +466,123 @@ with the Messages UI inside it, blue iMessage bubbles, same functions.
   buttons themselves are unchanged and still open Google Voice with
   the lead's number from (213) 495-3536. The thread's own Google Voice
   note (above) stays.
+
+## In-dashboard calling — Twilio Voice (2026-11-20)
+Rome: "when i click call and text button it takes me out and opens google
+voice thats not what should happen the call should start in dashboard."
+Google Voice has no API, so no dashboard can call through it — the fix is
+Twilio Voice in the browser. Rome approved it ("lets do it") after the
+price check: one local number $1.15/mo, outbound $0.014/min + $0.004/min
+browser leg (~$0.018/min of talking); 300–500 calls/day with 40–60
+pickups ≈ $50–100/mo. One number serves all three users at once, and all
+three can be on calls at the same time.
+
+### How it works
+- CALL uses the Twilio Voice JS SDK 2.19.0 (pinned CDN:
+  https://cdn.jsdelivr.net/npm/@twilio/voice-sdk@2.19.0/dist/twilio.min.js —
+  verified 200, exposes window.Twilio.Device with getLocalStream /
+  sendDigits / mute). The SDK loads lazily, only when CALL is pressed; the
+  dashboard never depends on the CDN to render.
+- Call states, all visible in the dialer: Dialing → Ringing → Connecting
+  (→ Connected with live timer) → Ended, plus Failed / Busy / No answer.
+  The mic row now has a phone icon + call state ("Ready to dial" /
+  "Dialing…" / "Ringing…" / "Connected 00:42"), and the mic bar is the
+  LIVE level. While a call is active the CALL button becomes red END CALL.
+- Mic level: live from the call's own local stream
+  (call.getLocalStream()) via a Web Audio analyser; if the SDK has no
+  local stream, it falls back to the READY mic (getUserMedia). The
+  standalone READY stream is stopped while the call owns the mic, so the
+  mic is never captured twice.
+- MUTE really mutes the Twilio call (call.mute) and updates in place —
+  it never re-renders mid-call. KEYPAD sends real DTMF (call.sendDigits)
+  once connected; before that it says to wait. SCRIPT opens the script
+  panel (read it yourself — never auto-played). DROP VM ends the call and
+  logs Voicemail. After a call ends, exactly ONE outcome is logged to the
+  Call Log + session stats + the lead's thread, from the real call:
+  Connected (stat connected), No answer (stat noAnswer), Busy (stat
+  dials), failed dial (outcome "dialed", stat dials). Busy is detected
+  best-effort from the SDK error text. Rome can still tap the manual
+  disposition buttons afterwards, as before.
+- TEXT stays Google Voice (Twilio SMS is a separate step, out of scope).
+
+### Token endpoint (worker/router.js)
+- GET /api/voice/status (session required) → {configured: bool}. No token
+  minted; the client checks this on login to decide the CALL path.
+- POST /api/voice/token (session required) → {token}, a 1-hour Twilio
+  Access Token (JWT, HMAC-SHA256, cty twilio-fpa;v=1) minted in the worker
+  with WebCrypto from env vars ONLY:
+  TWILIO_ACCOUNT_SID, TWILIO_API_KEY_SID, TWILIO_API_KEY_SECRET,
+  TWILIO_TWIML_APP_SID. Set them in the Cloudflare dashboard (Workers ->
+  sfb-ripmode-router -> Settings -> Variables). No secret value may ever
+  appear in this repo, in any file, or in any response — only the var
+  names. If any var is missing, the endpoint returns 503 "Calling not
+  set up yet" and CALL falls back to Google Voice.
+- The worker never dials anything itself — it only mints tokens; the
+  browser SDK places the call.
+
+### TwiML App setup (operator step — needs the Twilio dashboard)
+1. Upgrade the account (Rome's step — see checklist below).
+2. Number: the trial already has +1 737 232 4091 — verify it survives
+   the upgrade as the calling number before buying another. If not, buy
+   a US local number (Phone Numbers -> Buy a number, ~$1.15/mo).
+3. Create an API Key (Console -> Account -> API keys -> Create API Key).
+   The secret is shown ONCE — save it for the worker env vars. Never
+   use the Account Auth Token in the worker; API keys are scoped and
+   revocable.
+4. Create a Twilio Function (Functions -> Create) that dials the lead
+   with the Twilio number as caller ID:
+   ```js
+   exports.handler = function (context, event, callback) {
+     const twiml = new Twilio.twiml.VoiceResponse();
+     const dial = twiml.dial({ callerId: context.TWILIO_CALLER_ID }); // the purchased number
+     dial.number(event.To); // the lead's number, passed by the dashboard
+     callback(null, twiml);
+   };
+   ```
+   Set TWILIO_CALLER_ID in the Function's environment variables to the
+   purchased Twilio number.
+5. Create a TwiML App (Voice -> TwiML Apps -> Create): Voice Request URL
+   = the Function's URL (POST). Copy its SID — that is TWILIO_TWIML_APP_SID.
+6. Set the four worker env vars (above) in the Cloudflare dashboard.
+   Worker deploys do not wipe variables; no redeploy is needed after
+   setting them — but the dashboard must be hard-refreshed to pick up
+   the new CALL path (the status check runs on login).
+
+### Setup checklist (in order — live calling is BLOCKED until all done)
+(a) Upgrade: Rome enters a card (or Google Pay) and clicks Upgrade in
+    the open Twilio tab — Step 1 (Six Figure Blueprints LLC, 1200
+    Brickell Ave, Miami) and Step 2 ($20 balance, auto-recharge on)
+    are already done; Step 3 Payment is the remaining step. Trial has
+    4 days left.
+(b) Verify +1 737 232 4091 is the calling number after upgrade (or buy one).
+(c) API key + TwiML App + Function exist; all four env vars set on the worker.
+(d) Test call to Rome only, to his confirmed phone, before any lead is dialed.
+
+### Known limits (honest)
+- DROP VM ends the call and logs Voicemail — it does NOT play a recorded
+  message into the call. Real voicemail-drop needs a recording + answering
+  -machine detection, a future step.
+- Busy detection is best-effort (SDK error text); a failed dial before
+  answer logs as no_answer unless the error says busy/invalid.
+- Stale tokens: the SDK device is cached per page load; if a token is
+  older than 1 hour the call retries once with a fresh token.
+- The dashboard must be hard-refreshed after the env vars are set (the
+  Twilio check runs at login).
+
+### Verified 2026-11-20 ~14:46 UTC
+- Node harness (/tmp/twilio-harness.js) 39/39: JWT minting (structure,
+  grants, 1h expiry, HMAC-SHA256 verifies, null on missing env) and the
+  call-state machine (outcome mapping, timer labels, mute toggling a fake
+  call, DTMF send, endCall logging connected/no_answer/voicemail with
+  correct stats, checkTwilio false when unconfigured). The harness caught
+  one real bug before deploy (endCall called a misnamed analyser
+  function) — fixed and re-tested.
+- Deployed with deploy.py (KV binding preserved, worker modified
+  14:46:15 UTC); asset versions v=8 → v=9. Live fetch: /ripmode 200,
+  served app.js?v=9 and style.css?v=9 match local byte-for-byte (sha256).
+  /api/voice/status and /api/voice/token without a session return 401
+  "Not signed in." — endpoints exist and are session-guarded.
+  /api/auth/check: romanroyce hasAccount:true, loganwells false — KV
+  intact, no accounts touched, no E2E run, NO NUMBER DIALED.
+- NOT claimed: a real call has not been made. Live calling is blocked
+  until the four checklist steps above are done.

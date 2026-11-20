@@ -4,7 +4,15 @@
 // Passcodes are stored ONLY as salted PBKDF2-SHA256 hashes (100,000 iterations — the Cloudflare Workers PBKDF2 cap).
 // Login is username + exactly 4 digits. The JSON field is still named
 // "password" on the wire; its value is the 4-digit passcode.
-// Google Voice has NO API: this worker never dials, texts, or drops voicemail.
+// Google Voice has NO API: TEXT still opens Google Voice, and CALL falls
+// back to Google Voice until Twilio is live. In-dashboard calling is
+// Twilio Voice: this worker NEVER dials itself — it only mints short-lived
+// Voice access tokens (POST /api/voice/token) from env vars, and the
+// browser's Twilio Voice SDK places the call. No Twilio secret value may
+// ever appear in this file, in the repo, or in any response — only the
+// env var NAMES (TWILIO_ACCOUNT_SID, TWILIO_API_KEY_SID,
+// TWILIO_API_KEY_SECRET, TWILIO_TWIML_APP_SID), set in the Cloudflare
+// dashboard (Worker -> Settings -> Variables).
 // The personal forwarding number must NEVER appear in this file or any response.
 
 const UPSTREAM = "https://sfb-ripmode.vercel.app";
@@ -45,6 +53,40 @@ function hex(buf) {
 async function sha256Hex(text) {
   return hex(await crypto.subtle.digest("SHA-256", enc.encode(text)));
 }
+// ---- Twilio Voice access tokens (in-dashboard calling) ----
+// A Twilio Access Token is a JWT: header.payload signed with HMAC-SHA256
+// using the API Key SECRET. Only the API Key SID signs (iss) and the
+// Account SID is the subject (sub); the grant lets the browser place
+// outbound calls through the TwiML App named by TWIML_APP_SID.
+// Tokens live 1 hour; the client fetches a fresh one per call.
+function b64url(bytes) {
+  let s = b64(bytes);
+  return s.replace(/\+/g, "-").replace(/\//g, "_").replace(/=+$/g, "");
+}
+async function mintVoiceToken(env, username) {
+  const accountSid = env.TWILIO_ACCOUNT_SID || "";
+  const apiKeySid = env.TWILIO_API_KEY_SID || "";
+  const apiKeySecret = env.TWILIO_API_KEY_SECRET || "";
+  const twimlAppSid = env.TWILIO_TWIML_APP_SID || "";
+  if (!accountSid || !apiKeySid || !apiKeySecret || !twimlAppSid) return null;
+  const now = Math.floor(Date.now() / 1000);
+  const header = { typ: "JWT", alg: "HS256", cty: "twilio-fpa;v=1" };
+  const payload = {
+    jti: apiKeySid + "-" + now,
+    iss: apiKeySid,
+    sub: accountSid,
+    exp: now + 3600,
+    grants: {
+      identity: username,
+      voice: { outgoing: { application_sid: twimlAppSid }, incoming: { allow: true } },
+    },
+  };
+  const part = b64url(enc.encode(JSON.stringify(header))) + "." + b64url(enc.encode(JSON.stringify(payload)));
+  const key = await crypto.subtle.importKey("raw", enc.encode(apiKeySecret), { name: "HMAC", hash: "SHA-256" }, false, ["sign"]);
+  const sig = await crypto.subtle.sign("HMAC", key, enc.encode(part));
+  return part + "." + b64url(sig);
+}
+
 async function hashPasscode(passcode, saltB64) {
   const salt = saltB64 ? unb64(saltB64) : crypto.getRandomValues(new Uint8Array(16));
   const key = await crypto.subtle.importKey("raw", enc.encode(passcode), "PBKDF2", false, ["deriveBits"]);
@@ -161,6 +203,22 @@ async function handleApi(request, env) {
   // ---- state (session required) ----
   const username = await requireSession(env, request);
   if (!username) return err("Not signed in.", 401);
+
+  // ---- Twilio Voice (session required) ----
+  // GET /api/voice/status — is in-dashboard calling configured? No token
+  // is minted here, so the client can check cheaply on load.
+  if (path === "/api/voice/status" && request.method === "GET") {
+    const configured = !!(env.TWILIO_ACCOUNT_SID && env.TWILIO_API_KEY_SID && env.TWILIO_API_KEY_SECRET && env.TWILIO_TWIML_APP_SID);
+    return json({ configured });
+  }
+  // POST /api/voice/token — mint a 1-hour Voice access token for this user.
+  // 503 (not 500) when Twilio is not configured yet: the client falls back
+  // to Google Voice and says so plainly. Never a fake dial.
+  if (path === "/api/voice/token" && request.method === "POST") {
+    const token = await mintVoiceToken(env, username);
+    if (!token) return err("Calling not set up yet — Twilio is not configured on the server.", 503);
+    return json({ token });
+  }
 
   if (path === "/api/state" && request.method === "GET") {
     return json(await getState(env));

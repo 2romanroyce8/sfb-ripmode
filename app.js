@@ -1,13 +1,22 @@
 /* RIP MODE standalone — frontend.
    API lives in the Cloudflare router worker (same origin at /ripmode/api when
    served from sixfigureblueprints.com, workers.dev URL when on Vercel).
-   Google Voice has NO API: CALL/TEXT open Google Voice with the lead's
-   number shown — nothing here auto-dials, auto-plays a script, auto-drops
-   a voicemail, or auto-sends an SMS. */
+   In-dashboard calling is Twilio Voice (2026-11-20): CALL dials through the
+   browser via the Twilio Voice JS SDK when the token endpoint answers OK.
+   Until Twilio is configured on the server, CALL falls back to opening
+   Google Voice and says so plainly — never a fake dial. TEXT always opens
+   Google Voice (Twilio SMS is a separate step, out of scope). Nothing here
+   auto-plays a script or auto-sends an SMS. */
 const WORKER_API = "https://sfb-ripmode-router.2romanroyce8.workers.dev/api";
 const API_BASE = location.hostname.includes("sixfigureblueprints.com")
   ? "/ripmode/api" : WORKER_API;
 const GV_NUMBER = "(213) 495-3536";
+/* Twilio Voice JS SDK 2.19.0 (pinned — do not use @latest). Verified live:
+   https://cdn.jsdelivr.net/npm/@twilio/voice-sdk@2.19.0/dist/twilio.min.js
+   returns 200 and exposes window.Twilio.Device (plus Call, with
+   getLocalStream / sendDigits / mute). Loaded lazily, only when CALL is
+   pressed — the dashboard never depends on the CDN to render. */
+const TWILIO_SDK_URL = "https://cdn.jsdelivr.net/npm/@twilio/voice-sdk@2.19.0/dist/twilio.min.js";
 const CAL_LINK = "https://cal.com/roman-royce/30min";
 const ALLOWED_USERS = ["romanroyce", "loganwells", "braylengarrett"];
 
@@ -36,6 +45,21 @@ const CAL_TZ_LABELS = {"America/New_York": "Eastern", "America/Chicago": "Centra
 let activeConv = null;    // lead id for call-log conversation view
 let phoneSearch = "";    // live filter text for the unified Call Log list inside the iPhone mockup
 let micStream = null, micLevel = 0, micOn = false, muted = false;
+let readyOn = false;      // READY toggle state (survives re-renders; the pill is rendered from this)
+
+/* ---------- Twilio in-dashboard calling (2026-11-20) ----------
+   callState: "idle" | "dialing" | "ringing" | "connected" | "ended".
+   The call object lives here (module scope) so re-renders never drop it.
+   twilioReady: null = not checked yet, true = token endpoint OK,
+   false = not configured — CALL falls back to Google Voice. */
+let twilioReady = null;
+let twilioDevice = null, twilioSdkPromise = null;
+let activeCall = null;
+let callState = "idle";
+let callStartTs = 0, callTimerId = null;
+let callAccepted = false, callError = "", callLogged = false, connectCancelled = false;
+let lastCallNote = "";
+let callAudioCtx = null, callAnalyser = null, callAnalyserRAF = null, analyserSource = null; // "standalone" | "call"
 
 const $ = (s) => document.querySelector(s);
 const esc = (s) => String(s ?? "").replace(/[&<>"']/g, (c) => ({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;","'":"&#39;"}[c]));
@@ -47,7 +71,7 @@ const nowTime = () => new Date().toLocaleTimeString("en-US", {hour:"numeric", mi
 // readable labels for the stored disposition keys (no_answer etc.).
 const initialsFor = (name) => (name || "?").split(/\s+/).map((w) => w[0]).filter(Boolean).slice(0, 2).join("").toUpperCase();
 const whenShort = (date, time) => (date === todayStr() ? (time || date) : (date || time || ""));
-const CALL_LABELS = {no_answer: "No answer", voicemail: "Voicemail", not_interested: "Not interested", callback: "Callback", receptionist: "Receptionist", send_vsl: "VSL sent", dialed: "Dialed"};
+const CALL_LABELS = {no_answer: "No answer", voicemail: "Voicemail", not_interested: "Not interested", callback: "Callback", receptionist: "Receptionist", send_vsl: "VSL sent", dialed: "Dialed", connected: "Connected", busy: "Busy"};
 const callLabel = (o) => CALL_LABELS[o] || o;
 // Recents call type: the dialer only makes outbound calls. A call nobody
 // answered (no_answer / voicemail) reads as a missed call (red, iPhone style);
@@ -94,6 +118,7 @@ function showDashboard() {
   $("#manage-users-link").classList.toggle("hidden", !isOwner);
   $("#create-workspace").classList.toggle("hidden", !isOwner);
   updateNav();
+  checkTwilio(); // fire-and-forget: decides CALL (Twilio vs Google Voice fallback)
 }
 
 async function checkSession() {
@@ -184,6 +209,255 @@ function openGoogleVoice(kind, lead) {
     ? "https://voice.google.com/u/0/messages"
     : "https://voice.google.com/u/0/calls";
   window.open(url, "_blank");
+}
+
+/* ---------- Twilio in-dashboard calling (2026-11-20) ----------
+   CALL dials through the browser via the Twilio Voice JS SDK. States:
+   idle -> dialing -> ringing -> connected -> idle (ended). The call object
+   lives in module scope so re-renders never drop it. When the token
+   endpoint says Twilio is not configured (twilioReady === false), CALL
+   falls back to Google Voice and says so plainly — never a fake dial.
+   TEXT always stays Google Voice. */
+function fmtElapsed(sec) {
+  sec = Math.max(0, Math.floor(sec || 0));
+  return String(Math.floor(sec / 60)).padStart(2, "0") + ":" + String(sec % 60).padStart(2, "0");
+}
+function callElapsed() { return callStartTs ? (Date.now() - callStartTs) / 1000 : 0; }
+function callStateLabel(s, elapsedSec) {
+  if (s === "dialing") return "Dialing…";
+  if (s === "ringing") return "Ringing…";
+  if (s === "connected") return "Connected " + fmtElapsed(elapsedSec);
+  if (s === "ended") return "Call ended";
+  return "Ready to dial";
+}
+// Pure: what gets logged when a Twilio call ends. accepted = the far end
+// answered (the SDK 'accept' event fired). Busy is detected best-effort
+// from the SDK error text; anything else that never connected logs as
+// no_answer — dialer convention: nobody picked up. A failed dial (bad
+// number) logs as "dialed" so the attempt is still counted.
+function callOutcomeFor(o) {
+  const accepted = !!(o && o.accepted);
+  const errMsg = String((o && o.errorMsg) || "");
+  if (accepted) return { outcome: "connected", stat: "connected" };
+  if (/busy/i.test(errMsg)) return { outcome: "busy", stat: "dials" };
+  if (/invalid|not a valid/i.test(errMsg)) return { outcome: "dialed", stat: "dials" };
+  return { outcome: "no_answer", stat: "noAnswer" };
+}
+function callStatusLine() {
+  const lead = (state && state.leads) ? state.leads[ripIndex] : null;
+  if (callState === "dialing") return "Dialing " + (lead ? lead.phone : "") + "…";
+  if (callState === "ringing") return "Ringing " + (lead ? lead.business : "") + " — waiting for an answer…";
+  if (callState === "connected") return "Connected — " + fmtElapsed(callElapsed()) + ". Mute, keypad, script and DROP VM all work on this call.";
+  if (lastCallNote) return lastCallNote;
+  if (twilioReady === false) return "Calling via Google Voice until Twilio is live — tap CALL to open Google Voice.";
+  return "";
+}
+function syncCallUI() {
+  const pill = $("#call-state");
+  if (pill) pill.textContent = callStateLabel(callState, callElapsed());
+  const btn = $("#call-btn");
+  if (btn) {
+    const active = callState !== "idle";
+    btn.textContent = active ? "END CALL" : "CALL";
+    btn.classList.toggle("end", active);
+  }
+  const line = $("#call-status-line");
+  if (line) { line.textContent = callStatusLine(); line.classList.toggle("hidden", !line.textContent); }
+}
+function setCallState(s) { callState = s; syncCallUI(); }
+function startCallTimer() {
+  stopCallTimer();
+  callTimerId = setInterval(() => {
+    if (callState !== "connected") return;
+    const st = $("#call-state");
+    if (st) st.textContent = callStateLabel("connected", callElapsed());
+    const line = $("#call-status-line");
+    if (line) line.textContent = callStatusLine();
+  }, 1000);
+}
+function stopCallTimer() { if (callTimerId) clearInterval(callTimerId); callTimerId = null; }
+
+function loadScript(src) {
+  return new Promise((resolve, reject) => {
+    const s = document.createElement("script");
+    s.src = src; s.async = true;
+    s.onload = () => resolve();
+    s.onerror = () => reject(new Error("Could not load the Twilio calling code. Check the connection and try again."));
+    document.head.appendChild(s);
+  });
+}
+async function ensureTwilioDevice() {
+  if (twilioDevice) return twilioDevice;
+  if (!twilioSdkPromise) {
+    twilioSdkPromise = (async () => {
+      if (!window.Twilio || !window.Twilio.Device) await loadScript(TWILIO_SDK_URL);
+      if (!window.Twilio || !window.Twilio.Device) throw new Error("Twilio calling code did not load.");
+      const r = await api("/voice/token", "POST", {});
+      if (!r.token) throw new Error("Calling not set up yet — Twilio is not configured on the server.");
+      const device = new window.Twilio.Device(r.token, { logLevel: 1, codecPreferences: ["opus", "pcmu"] });
+      device.on("error", (e) => { console.warn("Twilio device error", e); });
+      try { await device.register(); } catch (_) { /* outgoing calls still work without registration */ }
+      twilioDevice = device;
+      return device;
+    })();
+    twilioSdkPromise.catch(() => { twilioSdkPromise = null; });
+  }
+  return twilioSdkPromise;
+}
+// Cheap check (no token minted): is Twilio configured on the server?
+async function checkTwilio() {
+  if (twilioReady !== null) return twilioReady;
+  try {
+    const r = await api("/voice/status", "GET");
+    twilioReady = !!r.configured;
+  } catch (_) { twilioReady = false; }
+  if (currentTab === "rip") render();
+  return twilioReady;
+}
+async function logCallEnd(lead, m) {
+  try { await mutate("logDisposition", { leadId: lead.id, outcome: m.outcome, stat: m.stat }); }
+  catch (e) { console.warn("Could not log call outcome", e); }
+}
+async function startTwilioCall(lead, retried) {
+  const to = String(lead.phone || "").replace(/[^\d+]/g, "");
+  if (!to) { showToast("This lead has no phone number on file."); return; }
+  lastCallNote = "";
+  connectCancelled = false;
+  callAccepted = false; callError = ""; callLogged = false;
+  setCallState("dialing");
+  let device;
+  try {
+    device = await ensureTwilioDevice();
+  } catch (e) {
+    setCallState("idle");
+    lastCallNote = e.message || "Calling not set up yet.";
+    if (currentTab === "rip") render();
+    showToast(lastCallNote + " Until Twilio is live, CALL opens Google Voice.");
+    return;
+  }
+  let call;
+  try {
+    call = await device.connect({ params: { To: to } });
+  } catch (e) {
+    // Stale token (older than 1 hour): drop the cached device and retry once with a fresh token.
+    if (!retried && /token|expir|auth/i.test((e && e.message) || "")) {
+      twilioDevice = null; twilioSdkPromise = null;
+      return startTwilioCall(lead, true);
+    }
+    callError = (e && e.message) || "Call failed.";
+    setCallState("idle");
+    lastCallNote = "Call failed — " + callError;
+    if (currentTab === "rip") render();
+    showToast(lastCallNote);
+    return;
+  }
+  if (connectCancelled) {
+    try { call.disconnect(); } catch (_) {}
+    setCallState("idle");
+    lastCallNote = "Call cancelled before it connected.";
+    if (!callLogged) { callLogged = true; logCallEnd(lead, { outcome: "dialed", stat: "dials" }); }
+    return;
+  }
+  activeCall = call;
+  call.on("ringing", () => { if (callState === "dialing") setCallState("ringing"); });
+  call.on("accept", () => {
+    callAccepted = true;
+    callStartTs = Date.now();
+    setCallState("connected");
+    startCallTimer();
+    attachCallMic(call);
+  });
+  call.on("disconnect", () => { if (callState !== "idle") endCall("remote"); });
+  call.on("cancel", () => { if (callState !== "idle") endCall("cancel"); });
+  call.on("error", (e) => { callError = (e && (e.message || e.code)) || ""; });
+  call.on("mute", (isMuted) => { muted = !!isMuted; syncMuteUI(); });
+}
+// how: "local" (Rome pressed END CALL) | "voicemail" (DROP VM) |
+// "remote" (far end hung up / Twilio disconnected) | "cancel".
+// Logs exactly ONE outcome per call, then returns to idle.
+async function endCall(how) {
+  if (callState === "idle") return;
+  const wasAccepted = callAccepted;
+  const errMsg = callError;
+  const call = activeCall;
+  activeCall = null;
+  stopCallTimer();
+  detachAnalyser();
+  if ((how === "local" || how === "voicemail") && call) {
+    try { call.disconnect(); } catch (_) {}
+  }
+  setCallState("idle");
+  const lead = (state && state.leads) ? state.leads[ripIndex] : null;
+  if (!lead || callLogged) return;
+  callLogged = true;
+  const m = how === "voicemail"
+    ? { outcome: "voicemail", stat: "voicemail" }
+    : callOutcomeFor({ accepted: wasAccepted, errorMsg: errMsg });
+  lastCallNote = "Call ended — " + (CALL_LABELS[m.outcome] || m.outcome) + ". Logged to the Call Log.";
+  await logCallEnd(lead, m);
+}
+function syncMuteUI() {
+  const pill = $("#live-pill");
+  if (pill) pill.textContent = muted ? "MUTED" : "LIVE";
+  const btn = $("#mute-btn");
+  if (btn) btn.textContent = muted ? "UNMUTE" : "MUTE";
+}
+function toggleMute() {
+  muted = !muted;
+  if (activeCall) { try { activeCall.mute(muted); } catch (_) {} }
+  syncMuteUI();
+}
+function sendDigit(k) {
+  if (activeCall && callState === "connected") {
+    try { activeCall.sendDigits(String(k)); } catch (e) { showToast("Could not send that key."); }
+  } else if (activeCall) {
+    showToast("Wait for the call to connect before using the keypad.");
+  } else {
+    showToast("Keypad works during a Twilio call — start a call first. Google Voice calls use the phone's own keypad.");
+  }
+}
+/* Mic level meter. Two sources, one analyser: the standalone READY mic
+   (getUserMedia) or, during a Twilio call, the call's own local stream
+   (call.getLocalStream()) — the call already owns the mic, so the
+   standalone stream is stopped to avoid capturing it twice. */
+function attachAnalyser(stream, source) {
+  detachAnalyser(true);
+  try {
+    if (!callAudioCtx) callAudioCtx = new (window.AudioContext || window.webkitAudioContext)();
+    if (callAudioCtx.state === "suspended") callAudioCtx.resume().catch(() => {});
+    const src = callAudioCtx.createMediaStreamSource(stream);
+    const an = callAudioCtx.createAnalyser(); an.fftSize = 512;
+    src.connect(an);
+    callAnalyser = an; analyserSource = source;
+    const buf = new Uint8Array(an.frequencyBinCount);
+    const tick = () => {
+      if (!callAnalyser) return;
+      an.getByteFrequencyData(buf);
+      const avg = buf.reduce((a, b) => a + b, 0) / buf.length;
+      micLevel = Math.min(100, Math.round(avg * 1.6));
+      const fill = $("#mic-fill"); if (fill) fill.style.width = micLevel + "%";
+      callAnalyserRAF = requestAnimationFrame(tick);
+    };
+    tick();
+  } catch (_) { /* the meter is cosmetic — never break a call over it */ }
+}
+function detachAnalyser(silent) {
+  if (callAnalyserRAF) cancelAnimationFrame(callAnalyserRAF);
+  callAnalyserRAF = null;
+  if (callAnalyser) { try { callAnalyser.disconnect(); } catch (_) {} }
+  callAnalyser = null; analyserSource = null;
+  if (!silent && readyOn) startMic();
+}
+function attachCallMic(call) {
+  let stream = null;
+  try { stream = call.getLocalStream ? call.getLocalStream() : null; } catch (_) {}
+  if (stream) {
+    if (micStream) { micStream.getTracks().forEach((t) => t.stop()); micStream = null; }
+    micOn = true;
+    attachAnalyser(stream, "call");
+  } else if (!micOn) {
+    startMic();
+  }
 }
 
 /* ---------- shell: template nav / topbar / account menu ---------- */
@@ -383,17 +657,18 @@ function renderRip() {
     <div class="card">
       <div class="lead-line"><b>${esc(lead.business)}</b></div>
       <div class="mic-wrap">
-        <span class="pill" id="mic-pill">${micOn ? "Mic live" : "Mic off"}</span>
+        <span class="pill" id="call-pill"><svg class="call-ico" viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M22 16.92v3a2 2 0 0 1-2.18 2 19.79 19.79 0 0 1-8.63-3.07 19.5 19.5 0 0 1-6-6 19.79 19.79 0 0 1-3.07-8.67A2 2 0 0 1 4.11 2h3a2 2 0 0 1 2 1.72c.127.96.361 1.903.7 2.81a2 2 0 0 1-.45 2.11L8.09 9.91a16 16 0 0 0 6 6l1.27-1.27a2 2 0 0 1 2.11-.45c.907.339 1.85.573 2.81.7A2 2 0 0 1 22 16.92z"/></svg><span id="call-state">${esc(callStateLabel(callState, callElapsed()))}</span></span>
         <div class="mic-bar"><div class="mic-fill" id="mic-fill" style="width:${micLevel}%"></div></div>
-        <span class="pill">${muted ? "MUTED" : "LIVE"}</span>
+        <span class="pill" id="live-pill">${muted ? "MUTED" : "LIVE"}</span>
       </div>
       <div class="lead-line" style="font-size:20px;font-weight:700">${esc(lead.phone)}</div>
+      <div id="call-status-line" class="${callStatusLine() ? "notice" : "hidden"}" style="margin-top:10px">${esc(callStatusLine())}</div>
       <div class="ready-row" style="margin-top:12px">
         <button class="btn btn--primary" id="ready-btn" style="flex:1;padding:12px">READY</button>
-        <span class="pill on" id="ready-state">Not ready</span>
+        <span class="pill on" id="ready-state">${readyOn ? "Ready" : "Not ready"}</span>
       </div>
       <div style="display:flex;gap:8px">
-        <button class="btn" id="mute-btn" style="flex:1">MUTE</button>
+        <button class="btn" id="mute-btn" style="flex:1">${muted ? "UNMUTE" : "MUTE"}</button>
         <button class="btn" id="keypad-btn" style="flex:1">KEYPAD</button>
       </div>
       <div style="display:flex;gap:8px;margin-top:8px">
@@ -403,12 +678,12 @@ function renderRip() {
       <div id="script-box" class="hidden" style="margin-top:10px">
         <div class="field"><label>${esc(script.title)}</label>
         <textarea class="input" readonly rows="5">${esc(script.body)}</textarea></div>
-        <p class="notice">Google Voice cannot auto-play a script or auto-drop a voicemail — read it yourself on the call, or record the voicemail in Google Voice.</p>
+        <p class="notice">Read it yourself on the call — the script is not played automatically.</p>
       </div>
       <div id="keypad-box" class="hidden" style="margin-top:10px">
         <div class="slots">${["1","2","3","4","5","6","7","8","9","*","0","#"].map((k) => `<button class="slot" data-key="${k}">${k}</button>`).join("")}</div>
       </div>
-      <button class="big-call" id="call-btn">CALL</button>
+      <button class="big-call${callState !== "idle" ? " end" : ""}" id="call-btn">${callState !== "idle" ? "END CALL" : "CALL"}</button>
       <button class="btn" id="text-btn" style="width:100%;margin-top:8px;padding:13px">TEXT</button>
     </div>
   </div>`;
@@ -438,25 +713,37 @@ function bindRip() {
   };
   const readyBtn = $("#ready-btn");
   if (readyBtn) readyBtn.onclick = async () => {
+    readyOn = !readyOn;
     const rs = $("#ready-state");
-    const on = rs.textContent !== "Ready";
-    rs.textContent = on ? "Ready" : "Not ready";
-    if (on) await startMic(); else stopMic();
+    rs.textContent = readyOn ? "Ready" : "Not ready";
+    if (readyOn) await startMic(); else stopMic();
   };
   const muteBtn = $("#mute-btn");
-  if (muteBtn) muteBtn.onclick = () => { muted = !muted; muteBtn.textContent = muted ? "UNMUTE" : "MUTE"; render(); };
+  if (muteBtn) muteBtn.onclick = () => toggleMute(); // in-place: never re-render mid-call
   const keypadBtn = $("#keypad-btn");
   if (keypadBtn) keypadBtn.onclick = () => $("#keypad-box").classList.toggle("hidden");
+  document.querySelectorAll(".slot").forEach((s) => { s.onclick = () => sendDigit(s.dataset.key); });
   const scriptBtn = $("#script-btn");
   if (scriptBtn) scriptBtn.onclick = () => $("#script-box").classList.toggle("hidden");
   const dropVm = $("#dropvm-btn");
   if (dropVm) dropVm.onclick = () => {
+    // During a Twilio call: end it and log Voicemail. (Twilio cannot inject
+    // a recorded message into a live call without a recording + AMD — that
+    // is a future step, documented in the README. This ends + logs, in sync.)
+    if (activeCall) { endCall("voicemail"); return; }
     const s = (state.scripts && state.scripts[0]) || {};
-    showToast("Google Voice cannot auto-drop a voicemail. Open Google Voice, call " + lead.phone + ", and record this if it goes to voicemail:\n\n" + (s.vm || "Hi, this is Roman from SFB Connect — we help roofers answer every call with AI and book more jobs. Call me back at " + GV_NUMBER + "."));
-    openGoogleVoice("call", lead);
+    showToast("No active call — start a call first, then DROP VM when it goes to voicemail. The voicemail script:\n\n" + (s.vm || "Hi, this is Roman from SFB Connect — we help roofers answer every call with AI and book more jobs. Call me back at " + GV_NUMBER + "."));
   };
   const callBtn = $("#call-btn");
   if (callBtn) callBtn.onclick = async () => {
+    if (callState !== "idle") { endCall("local"); return; } // END CALL
+    if (twilioReady) { await startTwilioCall(lead); return; }
+    if (twilioReady === null) {
+      const ok = await checkTwilio();
+      if (ok) { await startTwilioCall(lead); return; }
+    }
+    // Google Voice fallback (Twilio not configured yet) — same as before:
+    // log the dial, then open Google Voice. The status line says so plainly.
     await mutate("logDisposition", {leadId: lead.id, outcome: "dialed", stat: "dials", dialOnly: true});
     openGoogleVoice("call", lead);
   };
@@ -464,39 +751,25 @@ function bindRip() {
   if (textBtn) textBtn.onclick = () => openGoogleVoice("text", lead);
 }
 
-let micRAF = null;
 async function startMic() {
   try {
     micStream = await navigator.mediaDevices.getUserMedia({audio: true});
-    const ctx = new (window.AudioContext || window.webkitAudioContext)();
-    const src = ctx.createMediaStreamSource(micStream);
-    const an = ctx.createAnalyser(); an.fftSize = 512;
-    src.connect(an);
-    const buf = new Uint8Array(an.frequencyBinCount);
     micOn = true;
-    const pill = $("#mic-pill"); if (pill) pill.textContent = "Mic live";
-    const tick = () => {
-      if (!micOn) return;
-      an.getByteFrequencyData(buf);
-      const avg = buf.reduce((a, b) => a + b, 0) / buf.length;
-      micLevel = Math.min(100, Math.round(avg * 1.6));
-      const fill = $("#mic-fill"); if (fill) fill.style.width = micLevel + "%";
-      micRAF = requestAnimationFrame(tick);
-    };
-    tick();
+    attachAnalyser(micStream, "standalone");
+    const st = $("#call-state"); if (st && callState === "idle") st.textContent = "Mic live — ready to dial";
   } catch (e) {
     micOn = false;
-    const pill = $("#mic-pill"); if (pill) pill.textContent = "Mic blocked — allow microphone access in the browser";
+    const st = $("#call-state"); if (st && callState === "idle") st.textContent = "Mic blocked — allow microphone access in the browser";
     showToast("Microphone is not available in this browser — check the site's microphone permission. The mic bar will stay at zero.");
   }
 }
 function stopMic() {
   micOn = false; micLevel = 0;
-  if (micRAF) cancelAnimationFrame(micRAF);
   if (micStream) micStream.getTracks().forEach((t) => t.stop());
   micStream = null;
+  if (analyserSource === "standalone") detachAnalyser(true);
   const fill = $("#mic-fill"); if (fill) fill.style.width = "0%";
-  const pill = $("#mic-pill"); if (pill) pill.textContent = "Mic off";
+  const st = $("#call-state"); if (st && callState === "idle") st.textContent = "Ready to dial";
 }
 
 /* ---------- LEADS ---------- */
@@ -842,12 +1115,16 @@ function bindCallLog() {
 /* ---------- CONNECTIONS ---------- */
 function renderConnections() {
   const rows = [
-    ["Google Voice", "Connected", "Calling + texting from (213) 495-3536. Free. No API — calls and texts open in Google Voice.", "green"],
+    ["Google Voice", "Connected", "Calling + texting from (213) 495-3536. Free. No API — TEXT opens Google Voice; CALL uses Twilio when live, Google Voice until then.", "green"],
     ["Cal.com", "Connected", "5 event types verified. Booking link: " + CAL_LINK, "green"],
     ["Gmail", "Connected via Muse", "Muse connector is connected. This app does not sync Gmail itself.", "green"],
     ["Google Calendar / Meet", "Connected via Muse", "Muse connector is connected. Meet links are created through Calendar events.", "green"],
     ["Resend", "Key pending", "Domain sixfigureblueprintsllc.com is verified in Resend. sfbconnect.com is NOT verified and cannot send. The auto-dialer key still needs to be submitted to Muse — until then, follow-up emails are queued, never claimed as sent.", "amber"],
-    ["Twilio", "Not needed", "Dropped. Google Voice handles calling and texting for free — no Twilio upgrade, no Twilio number.", ""],
+    ["Twilio Voice", twilioReady === true ? "Connected" : twilioReady === false ? "Not set up yet" : "Checking…",
+      twilioReady === true ? "In-dashboard calling is live — CALL dials through Twilio from the browser. One number, all three of you can call at once."
+      : twilioReady === false ? "In-dashboard calling needs: Twilio upgrade + a number + API key and TwiML App set as worker env vars. Until then CALL opens Google Voice."
+      : "Checking whether Twilio calling is configured…",
+      twilioReady === true ? "green" : twilioReady === false ? "amber" : ""],
   ];
   return `
   <div class="card">${rows.map(([name, status, note, cls]) => `
