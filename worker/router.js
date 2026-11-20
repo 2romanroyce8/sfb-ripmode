@@ -70,9 +70,12 @@ async function mintVoiceToken(env, username) {
   const twimlAppSid = env.TWILIO_TWIML_APP_SID || "";
   if (!accountSid || !apiKeySid || !apiKeySecret || !twimlAppSid) return null;
   const now = Math.floor(Date.now() / 1000);
+  // Random suffix: two tokens minted in the same second (e.g. a retry right
+  // after a failed dial re-mints immediately) must not be byte-identical.
+  const rand = [...crypto.getRandomValues(new Uint8Array(6))].map((b) => b.toString(16).padStart(2, "0")).join("");
   const header = { typ: "JWT", alg: "HS256", cty: "twilio-fpa;v=1" };
   const payload = {
-    jti: apiKeySid + "-" + now,
+    jti: apiKeySid + "-" + now + "-" + rand,
     iss: apiKeySid,
     sub: accountSid,
     exp: now + 3600,

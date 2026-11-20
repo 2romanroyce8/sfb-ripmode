@@ -672,3 +672,94 @@ three can be on calls at the same time.
   style.css?v=11 match local byte-for-byte (sha256). /api/voice/status
   without a session returns 401 as before. NO NUMBER DIALED. Zero
   occurrences of Rome's personal number in any file.
+
+### "Call failed — Call failed." — diagnosis + error-surfacing fix (2026-11-20 ~10:47 ET, deployed v=12)
+- SYMPTOM: after all four Twilio vars were restored (~10:43 ET) and Rome
+  signed out/in, the test call showed "Dialing…" then the alert "Call
+  failed — Call failed." Twilio's own logs showed NO call attempt at all
+  (call logs empty, Debugger empty for 24h, Function never invoked) — the
+  failure happened upstream, in the browser SDK / token / device.connect
+  step, before Twilio was reached. The TwiML App, the deployed Function
+  and TWILIO_CALLER_ID were all verified correct in the Twilio console.
+- DIAGNOSIS (code read, not guessed):
+  1. The toast came from startTwilioCallTo's connect() catch:
+     `callError = (e && e.message) || "Call failed."`, then
+     `lastCallNote = "Call failed — " + callError`. It discarded e.code
+     everywhere, and fell back to the bare "Call failed." when e.message
+     was falsy. The Twilio Voice SDK 2.19.0 source (jsDelivr) was read:
+     every generated TwilioError sets .message as "Name (code): message"
+     and there is NO literal "Call failed" string in the SDK — so the
+     rejection that produced the toast was not a TwilioError, or its
+     message was empty. call.on("error") stored only e.message || e.code
+     and device.on("error") only console.warned.
+  2. PRIME BLACK HOLE — device registration: ensureTwilioDevice swallowed
+     register() errors (`try { await device.register(); } catch (_) {}`).
+     In SDK 2.x, register() awaits Registered-or-Unregistered, so an auth
+     failure (31201/31202/31204/31205) resolves as Unregistered and the
+     error is delivered ONLY via the device 'error' event — which the app
+     never surfaced. The app then called device.connect() on an
+     unregistered device with a dead stream. This is the leading
+     explanation for a messageless connect() failure with zero Twilio log
+     entries.
+  3. Token minting (worker/router.js mintVoiceToken) verified CORRECT:
+     header {typ:"JWT", alg:"HS256", cty:"twilio-fpa;v=1"}; payload jti /
+     iss = API key SID / sub = account SID / exp = now+3600 / grants
+     {identity: username, voice: {outgoing: {application_sid},
+     incoming: {allow: true}}}; HMAC-SHA256 with the API key secret;
+     b64/b64url correct. No minting bug found. Minor hardening only:
+     same-second re-mints were byte-identical (jti had no random part).
+  4. All four var NAMES confirmed present on the live worker via the
+     Cloudflare API before the fix — the dashboard "deploy" after
+     restoring them did not wipe them.
+- FIX (deployed v=12, 2026-11-20):
+  1. app.js `twilioErrorDetail(e)` formatter: code + message +
+     description/explanation, recursing into .originalError, JSON fallback
+     for plain objects, never an empty string, never a token/secret. Used
+     in the connect() catch, the ensure-device catch, device.on("error")
+     and call.on("error"). The dialer now shows e.g. "Call failed —
+     (31202) AccessTokenSignatureValidationFailed: …" in the toast/alert
+     AND as a persistent "Last call error" line (lastCallNote, rendered
+     by #call-status-line) in the RIP MODE dialer panel, readable off a
+     screenshot. A device sign-in failure is appended as "[Device
+     sign-in also failed: …]".
+  2. ensureTwilioDevice now CAPTURES register() failures: device 'error'
+     events are stored in lastDeviceError (and shown live when idle), a
+     register() throw is recorded, and a device whose state is still not
+     "registered" after register() resolves is recorded as "did not
+     register" instead of silently proceeding to connect().
+  3. Auth-code retry: connect() failures with code 31201/31202/31204/
+     31205 now also trigger the one fresh-token retry (previously only
+     token/expiry message text did).
+  4. endCall: a failed test call notes "Test call failed — (code): …"
+     (still never logged anywhere); a failed lead call appends the error
+     to its note. callOutcomeFor: an SDK-error failure now logs as
+     "dialed" (a failed dial) instead of "no_answer" — no-answer is
+     reserved for calls that rang with no error.
+  5. worker/router.js: token jti now has a random suffix, so two tokens
+     minted in the same second are never byte-identical.
+  6. Google Voice fallback for lead calls is unchanged. No API key was
+     rotated or created. The Function and TwiML App were not changed.
+- WHAT THE NEXT RETRY WILL TELL US (Rome must retry the test call and
+  screenshot the new error line — that is the real proof): 31202 = the
+  stored API key secret (or Account/Key SID) is wrong → fix is a NEW API
+  key via a browser task (the secret is shown once at creation and
+  cannot be re-read; do not invent one). 31204 = malformed JWT (minting
+  bug — none found in code). 31205 = expired. 31005/31009 = network /
+  transport. 31401/31402 = microphone.
+- VERIFIED: Node harness (/tmp/callerror-harness.js) 32/32 against the
+  real app.js + real worker/router.js — error code/message surfaces for
+  SDK errors (code-only, full TwilioError, string, null), device
+  registration failures captured and appended, async call 'error' after
+  connect surfaces in the test-call note with nothing logged, outcome
+  mapping (error → dialed, silent → no_answer, busy → busy), 31204
+  rejection retries once with a fresh token and dials, and token minting
+  still produces a verifiable JWT (HMAC-SHA256 signature verifies,
+  cty/iss/sub/exp/grants correct, jti unique across same-second mints,
+  missing var → null). Previous harness (/tmp/checktwilio2-harness.js)
+  still 9/9. Deployed with the FIXED deploy.py only; verified after
+  deploy via the Cloudflare API that all five bindings are still present
+  (RIPMODE_KV, TWILIO_ACCOUNT_SID, TWILIO_API_KEY_SID,
+  TWILIO_API_KEY_SECRET, TWILIO_TWIML_APP_SID). Live fetch:
+  /ripmode 200 serving v=12, served app.js?v=12, style.css?v=12 and
+  index.html match local byte-for-byte. NO NUMBER DIALED. Zero
+  occurrences of Rome's personal number in any file.

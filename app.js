@@ -60,6 +60,14 @@ let activeCall = null;
 let callState = "idle";
 let callStartTs = 0, callTimerId = null;
 let callAccepted = false, callError = "", callLogged = false, connectCancelled = false;
+// Last Twilio device/registration error, formatted for the UI. The Voice SDK
+// delivers registration/auth failures (31201/31202/31204/31205) on the device
+// 'error' event, NOT through the connect() promise — and register() resolves
+// even when the device ends up Unregistered — so without this the precise
+// error was only ever a console.warn and the dial failed downstream with no
+// detail at all. (2026-11-20: Rome's test call failed exactly this way —
+// "Call failed — Call failed." — with zero Twilio log entries.)
+let lastDeviceError = "";
 let lastCallNote = "";
 // Owner-only test call (2026-11-20): isTestCall marks a call dialled from the
 // Test call box (a typed number, not a lead). A test call is never logged or
@@ -251,6 +259,11 @@ function callOutcomeFor(o) {
   if (accepted) return { outcome: "connected", stat: "connected" };
   if (/busy/i.test(errMsg)) return { outcome: "busy", stat: "dials" };
   if (/invalid|not a valid/i.test(errMsg)) return { outcome: "dialed", stat: "dials" };
+  // Any other SDK error means the dial itself failed (bad token, dead
+  // signaling, mic) — that is a failed dial, NOT "no answer". No-answer is
+  // reserved for calls that rang with no error. (Before this, an auth
+  // failure on a lead call was logged as "No answer", hiding the real cause.)
+  if (errMsg) return { outcome: "dialed", stat: "dials" };
   return { outcome: "no_answer", stat: "noAnswer" };
 }
 function callStatusLine() {
@@ -307,6 +320,34 @@ function loadScript(src) {
     document.head.appendChild(s);
   });
 }
+// Format any Twilio SDK / device / token error into something Rome can read
+// off a screenshot: code + message + description/explanation when present.
+// TwilioError objects carry .code/.message/.description/.explanation/.causes
+// and sometimes .originalError; raw gateway payloads are plain objects with
+// .code/.message. Plain strings pass through. Never returns an empty string,
+// and never includes a token or secret — only the error's own fields.
+// (The old code read only e.message and fell back to a bare "Call failed.",
+// so a rejection with no .message — exactly what Rome hit on 2026-11-20 —
+// discarded the code entirely.)
+function twilioErrorDetail(e) {
+  if (e == null) return "no error detail from the calling code";
+  if (typeof e === "string") return e.trim() ? e : "empty error from the calling code";
+  const code = (e.code !== undefined && e.code !== null && e.code !== "") ? String(e.code) : "";
+  let msg = (e.message || e.description || "") + "";
+  const expl = (e.explanation || "") + "";
+  // TwilioError.message already reads "Name (code): <explanation|message>".
+  if (code && msg.indexOf("(" + code + ")") === -1) msg = "(" + code + ") " + msg;
+  if (expl && msg.indexOf(expl) === -1) msg = msg ? msg + " — " + expl : expl;
+  if (!msg) {
+    if (e.originalError) return twilioErrorDetail(e.originalError);
+    try {
+      const j = JSON.stringify(e);
+      if (j && j !== "{}") return "error object: " + j.slice(0, 300);
+    } catch (_) {}
+    return "error with no message or code";
+  }
+  return msg;
+}
 async function ensureTwilioDevice() {
   if (twilioDevice) return twilioDevice;
   if (!twilioSdkPromise) {
@@ -316,8 +357,32 @@ async function ensureTwilioDevice() {
       const r = await api("/voice/token", "POST", {});
       if (!r.token) throw new Error("Calling not set up yet — Twilio is not configured on the server.");
       const device = new window.Twilio.Device(r.token, { logLevel: 1, codecPreferences: ["opus", "pcmu"] });
-      device.on("error", (e) => { console.warn("Twilio device error", e); });
-      try { await device.register(); } catch (_) { /* outgoing calls still work without registration */ }
+      device.on("error", (e) => {
+        // Registration/auth failures (31201/31202/31204/31205) arrive HERE,
+        // not through connect(). Record the precise error so the next dial
+        // can say why instead of a bare "Call failed."
+        lastDeviceError = twilioErrorDetail(e);
+        console.warn("Twilio device error", e);
+        if (callState === "idle" && currentTab === "rip") {
+          lastCallNote = "Twilio device error — " + lastDeviceError;
+          syncCallUI();
+        }
+      });
+      try {
+        await device.register();
+      } catch (err) {
+        // register() throws on a dead stream / bad state; the gateway auth
+        // failure itself arrives via the device 'error' event above.
+        lastDeviceError = lastDeviceError || twilioErrorDetail(err);
+        console.warn("Twilio device registration failed", err);
+      }
+      if (device.state && device.state !== "registered") {
+        // register() resolves even when the device ends up Unregistered (it
+        // waits for Registered OR Unregistered). A device that never
+        // registered cannot place a call — record it now instead of letting
+        // connect() fail downstream with no detail.
+        lastDeviceError = lastDeviceError || ("Twilio device did not register (state: " + device.state + ") — no error code was delivered.");
+      }
       twilioDevice = device;
       return device;
     })();
@@ -377,7 +442,7 @@ async function startTwilioCallTo(to, opts) {
   } catch (e) {
     setCallState("idle");
     if (isTest) { isTestCall = false; clearTestInput(); }
-    lastCallNote = e.message || "Calling not set up yet.";
+    lastCallNote = twilioErrorDetail(e);
     if (currentTab === "rip") render();
     // Test calls never fall back to Google Voice — there is nothing to open.
     showToast(isTest ? lastCallNote : lastCallNote + " Until Twilio is live, CALL opens Google Voice.");
@@ -387,12 +452,18 @@ async function startTwilioCallTo(to, opts) {
   try {
     call = await device.connect({ params: { To: to } });
   } catch (e) {
-    // Stale token (older than 1 hour): drop the cached device and retry once with a fresh token.
-    if (!retried && /token|expir|auth/i.test((e && e.message) || "")) {
+    // Stale/invalid token: drop the cached device and retry once with a fresh
+    // token. Match on the numeric code too — the rejection may carry a code
+    // with no message at all (exactly what Rome hit on 2026-11-20).
+    const code = e && e.code;
+    if (!retried && (code === 31201 || code === 31202 || code === 31204 || code === 31205 || /token|expir|auth/i.test((e && e.message) || ""))) {
       twilioDevice = null; twilioSdkPromise = null;
       return startTwilioCallTo(to, {isTest, retried: true, lead});
     }
-    callError = (e && e.message) || "Call failed.";
+    callError = twilioErrorDetail(e);
+    // If the device never registered (bad token/secret), say so: the connect
+    // failure alone rarely carries the code.
+    if (lastDeviceError) callError += " [Device sign-in also failed: " + lastDeviceError + "]";
     setCallState("idle");
     if (isTest) { isTestCall = false; clearTestInput(); }
     lastCallNote = "Call failed — " + callError;
@@ -425,7 +496,7 @@ async function startTwilioCallTo(to, opts) {
   });
   call.on("disconnect", () => { if (callState !== "idle") endCall("remote"); });
   call.on("cancel", () => { if (callState !== "idle") endCall("cancel"); });
-  call.on("error", (e) => { callError = (e && (e.message || e.code)) || ""; });
+  call.on("error", (e) => { callError = twilioErrorDetail(e); });
   call.on("mute", (isMuted) => { muted = !!isMuted; syncMuteUI(); });
 }
 // how: "local" (Rome pressed END CALL) | "voicemail" (DROP VM) |
@@ -448,9 +519,14 @@ async function endCall(how) {
     : callOutcomeFor({ accepted: wasAccepted, errorMsg: errMsg });
   if (isTestCall) {
     // Test call: outcome shows in the dialer UI only — never logged to the
-    // Call Log, never saved to KV, and the typed number is wiped.
+    // Call Log, never saved to KV, and the typed number is wiped. If the
+    // call failed with an SDK error, the note carries the real error (code +
+    // message) instead of a bare outcome label — this is the persistent
+    // "Last call error" line Rome reads off a screenshot.
     const elapsed = m.outcome === "connected" ? " " + fmtElapsed(callElapsed()) : "";
-    lastCallNote = "Test call ended — " + (CALL_LABELS[m.outcome] || m.outcome) + elapsed + ". Not logged anywhere.";
+    lastCallNote = errMsg
+      ? "Test call failed — " + errMsg + ". Not logged anywhere."
+      : "Test call ended — " + (CALL_LABELS[m.outcome] || m.outcome) + elapsed + ". Not logged anywhere.";
     isTestCall = false; clearTestInput();
     syncCallUI();
     return;
@@ -458,7 +534,7 @@ async function endCall(how) {
   const lead = (state && state.leads) ? state.leads[ripIndex] : null;
   if (!lead || callLogged) return;
   callLogged = true;
-  lastCallNote = "Call ended — " + (CALL_LABELS[m.outcome] || m.outcome) + ". Logged to the Call Log.";
+  lastCallNote = "Call ended — " + (CALL_LABELS[m.outcome] || m.outcome) + (errMsg ? " — " + errMsg : "") + ". Logged to the Call Log.";
   await logCallEnd(lead, m);
 }
 function syncMuteUI() {
