@@ -1,7 +1,7 @@
 // sfb-ripmode-router — Cloudflare Worker.
 // 1) Proxies sixfigureblueprints.com/ripmode* to the Vercel app (BillMe pattern).
 // 2) Serves the app's API at /ripmode/api/* with shared state in KV (ripmode-data).
-// Passwords are stored ONLY as salted PBKDF2-SHA256 hashes (120k iterations).
+// Passwords are stored ONLY as salted PBKDF2-SHA256 hashes (100,000 iterations — the Cloudflare Workers PBKDF2 cap).
 // Google Voice has NO API: this worker never dials, texts, or drops voicemail.
 // The personal forwarding number must NEVER appear in this file or any response.
 
@@ -47,7 +47,7 @@ async function hashPassword(password, saltB64) {
   const salt = saltB64 ? unb64(saltB64) : crypto.getRandomValues(new Uint8Array(16));
   const key = await crypto.subtle.importKey("raw", enc.encode(password), "PBKDF2", false, ["deriveBits"]);
   const bits = await crypto.subtle.deriveBits(
-    { name: "PBKDF2", salt, iterations: 120000, hash: "SHA-256" },
+    { name: "PBKDF2", salt, iterations: 100000, hash: "SHA-256" },
     key, 256
   );
   return { salt: b64(salt), hash: b64(bits) };
