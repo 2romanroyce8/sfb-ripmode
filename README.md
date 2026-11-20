@@ -358,3 +358,54 @@ tab to look like it. Rebuilt to that layout (not the reference's content):
 - Honest limitation: the Calendar tab is behind login, so it could not be
   visually verified in this session without Rome's passcode. Rome must
   check the Calendar tab himself after a hard refresh.
+
+## Button / pill hardening + iMessage + Recents (2026-11-20)
+Rome sent the Connections screenshot: the Resend "Key pending" pill was a
+tall round oval with "Key" / "pending" wrapped on two lines, next to clean
+"Connected" pills. Same fault made Call Log "New" badges circles.
+- Root cause: `.badge` / `.pill` are flex items in rows (`.kv`,
+  `.conv-item`) whose default `align-items:stretch` stretched them to the
+  full row height, and with no `white-space:nowrap` a long label wrapped
+  inside. A stretched, wrapped pill reads as a circle. Fix (same block in
+  ripmode.css and style.css): every pill/badge is `white-space:nowrap`,
+  `flex-shrink:0`, self-aligned to its natural height (`.badge` top,
+  `.pill` centred); `.kv` rows align to the top; `.btn` / `.slot` / `.day`
+  / `.role-chip` are nowrap too. One consistent pill style app-wide —
+  same font, radius, padding; colour only marks state (green connected,
+  amber pending, grey neutral). No copy, colours' meaning, or behaviour
+  changed. (One deliberate exception: `#book-meeting-btn` keeps
+  `white-space:normal` — it is a full-width CTA whose long label may wrap
+  on very narrow screens rather than overflow.)
+- Call Log conversations are now iPhone Messages style: list rows with a
+  round avatar circle (lead initials, e.g. JR / PR), bold lead name, grey
+  preview line, last-activity time on the right, and a small blue dot for
+  "New" leads instead of the old circle badge (no text in a circle ever).
+  Opened thread: outgoing messages in blue bubbles on the right, incoming
+  in grey bubbles on the left, centred grey timestamps above messages,
+  calls as centred grey system rows ("Call — No answer · Nov 20, 2026 ·
+  9:15 AM"), and an iMessage input bar (rounded field + round blue ↑ send
+  button, same `#chat-send` id and behaviour).
+- Call Log CALLS list is now iPhone Phone Recents style: each row shows
+  the lead name, call type (↙ "Missed call" in red for no_answer /
+  voicemail, ↗ "Outgoing call" for connected/dialed outcomes, with the
+  readable outcome label), date/time on the right (time if today, else
+  date), and an info chevron; tapping a row still opens that lead's chat
+  thread. Empty state unchanged and honest ("No calls logged yet. Dial in
+  RIP MODE and log the outcome.") — both leads currently have zero calls,
+  so nothing is shown until a real call is logged. No messages, times, or
+  history invented anywhere; all times/dates come from the stored call
+  logs and messages.
+- Verified 2026-11-20: `node --check` clean; a Node harness rendering the
+  real `renderCallLog()` passed 26/26 checks (empty state, avatars,
+  previews, blue dot, Recents rows, missed/outgoing, chevron, time/date,
+  thread bubbles, stamps, send arrow, no table markup left). Deployed
+  with deploy.py (KV binding preserved); asset versions bumped v=5 → v=6.
+- Honest limitation: every tab is behind login, so the pills/bubbles/
+  Recents rows could not be visually verified in this session without
+  Rome's passcode. Rome must hard-refresh and check the Connections tab
+  (Resend "Key pending" pill) and the Call Log tab himself.
+- Pre-existing drift noted, not changed: style.css's RIP MODE login block
+  still holds the superseded v2 centred-card rules while ripmode.css has
+  the current v3 full-screen login — the live login renders full-screen
+  because index.html's inline critical CSS wins. Out of scope for this
+  fix; the files should be re-synced on the next login touch.

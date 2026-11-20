@@ -41,6 +41,17 @@ const esc = (s) => String(s ?? "").replace(/[&<>"']/g, (c) => ({"&":"&amp;","<":
 const fmtPhone = (p) => p || "";
 const todayStr = () => new Date().toLocaleDateString("en-US", {month:"short", day:"numeric", year:"numeric"});
 const nowTime = () => new Date().toLocaleTimeString("en-US", {hour:"numeric", minute:"2-digit"});
+// Display helpers (2026-11-20) — formatting of real stored data only, nothing invented:
+// initials for iMessage-style avatars; short date/time ("9:15 AM" if today, else "Nov 19, 2026");
+// readable labels for the stored disposition keys (no_answer etc.).
+const initialsFor = (name) => (name || "?").split(/\s+/).map((w) => w[0]).filter(Boolean).slice(0, 2).join("").toUpperCase();
+const whenShort = (date, time) => (date === todayStr() ? (time || date) : (date || time || ""));
+const CALL_LABELS = {no_answer: "No answer", voicemail: "Voicemail", not_interested: "Not interested", callback: "Callback", receptionist: "Receptionist", send_vsl: "VSL sent", dialed: "Dialed"};
+const callLabel = (o) => CALL_LABELS[o] || o;
+// Recents call type: the dialer only makes outbound calls. A call nobody
+// answered (no_answer / voicemail) reads as a missed call (red, iPhone style);
+// a call that connected (or was only dialed) reads as an outgoing call.
+const isMissedCall = (c) => c.outcome === "no_answer" || c.outcome === "voicemail";
 
 async function api(path, method, body) {
   const res = await fetch(API_BASE + path, {
@@ -706,13 +717,13 @@ function renderCallLog() {
     <h2 style="margin-top:14px">${esc(lead ? lead.business : "Conversation")}</h2>
     <p class="sub">${esc(lead ? lead.phone : "")} · ${calls.length} call${calls.length === 1 ? "" : "s"} logged</p>
     <div class="card"><div class="chat-thread">
-      ${calls.map((c) => `<div class="msg in">Call — ${esc(c.outcome)}<div class="mmeta">${esc(c.date)} · ${esc(c.time)}</div></div>`).join("")}
-      ${(conv.messages || []).map((m) => `<div class="msg ${m.from === "me" ? "out" : "in"}">${esc(m.text)}<div class="mmeta">${esc(m.from === "me" ? "You" : "Lead")} · ${esc(m.date || "")} ${esc(m.time || "")}</div></div>`).join("") || ""}
+      ${calls.map((c) => `<div class="im-sys">Call — ${esc(callLabel(c.outcome))} · ${esc(c.date)} · ${esc(c.time)}</div>`).join("")}
+      ${(conv.messages || []).map((m) => `${(m.date || m.time) ? `<div class="im-stamp">${esc(m.date || "")}${m.date && m.time ? " · " : ""}${esc(m.time || "")}</div>` : ""}<div class="msg ${m.from === "me" ? "out" : "in"}">${esc(m.text)}</div>`).join("") || ""}
       ${!calls.length && !(conv.messages || []).length ? `<div class="notice">No calls or messages yet for this lead.</div>` : ""}
     </div>
     <div class="chat-input">
       <input class="input" id="chat-input" type="text" placeholder="Type a message or note for this lead…">
-      <button class="btn btn--primary" id="chat-send">Send</button>
+      <button class="chat-send" id="chat-send" type="button" aria-label="Send">↑</button>
     </div>
     <p class="notice">Messages you type here are saved to this lead's thread. Outbound texts go through Google Voice — use the TEXT button in RIP MODE to send them.</p>
     </div>`;
@@ -721,10 +732,11 @@ function renderCallLog() {
   <div class="grid2">
     <div>
       <div class="section-title" style="margin-top:0">Calls</div>
-      <div class="card">${logs.length ? `<div class="table-wrap"><table><thead><tr><th>Lead</th><th>Outcome</th><th>When</th></tr></thead><tbody>
-        ${logs.map((c) => { const l = leadById(c.leadId); return `<tr class="rowlink" data-openconv="${c.leadId}">
-          <td><b>${esc(l ? l.business : "—")}</b></td><td>${esc(c.outcome)}</td><td>${esc(c.date)} ${esc(c.time)}</td></tr>`; }).join("")}
-      </tbody></table></div>` : `<div class="notice">No calls logged yet. Dial in RIP MODE and log the outcome.</div>`}</div>
+      <div class="card">${logs.length ? `<div class="recents">
+        ${logs.map((c) => { const l = leadById(c.leadId); const missed = isMissedCall(c); return `<button class="recent-item" data-openconv="${c.leadId}">
+          <span class="recent-main"><b class="${missed ? "missed" : ""}">${esc(l ? l.business : "—")}</b><span class="recent-sub ${missed ? "missed" : ""}">${missed ? "↙ Missed call" : "↗ Outgoing call"} · ${esc(callLabel(c.outcome))}</span></span>
+          <span class="recent-right"><span class="recent-time">${esc(whenShort(c.date, c.time))}</span><span class="recent-chev">›</span></span></button>`; }).join("")}
+      </div>` : `<div class="notice">No calls logged yet. Dial in RIP MODE and log the outcome.</div>`}</div>
     </div>
     <div>
       <div class="section-title" style="margin-top:0">Conversations</div>
@@ -732,9 +744,12 @@ function renderCallLog() {
         const conv = convFor(l.id);
         const lastMsg = (conv && conv.messages && conv.messages[conv.messages.length - 1]) || null;
         const n = callsFor(l.id).length;
+        const lastCall = callsFor(l.id).slice(-1)[0] || null;
+        const lastAt = lastMsg ? whenShort(lastMsg.date, lastMsg.time) : (lastCall ? whenShort(lastCall.date, lastCall.time) : "");
         return `<button class="conv-item" data-openconv="${l.id}">
-          <span><b>${esc(l.business)}</b><br><span style="font-size:13px;color:var(--muted)">${lastMsg ? esc(lastMsg.text.slice(0, 60)) : (n ? n + " call" + (n === 1 ? "" : "s") + " logged" : "No calls or messages yet")}</span></span>
-          <span class="badge">${esc(l.stage || "New")}</span></button>`;
+          <span class="im-avatar">${esc(initialsFor(l.business))}</span>
+          <span class="im-conv-main"><b>${esc(l.business)}</b><span class="im-preview">${lastMsg ? esc(lastMsg.text.slice(0, 60)) : (n ? n + " call" + (n === 1 ? "" : "s") + " logged" : "No calls or messages yet")}</span></span>
+          <span class="im-conv-right">${lastAt ? `<span class="im-time">${esc(lastAt)}</span>` : ""}${(l.stage || "New") === "New" ? `<span class="im-unread" title="New lead"></span>` : ""}</span></button>`;
       }).join("")}</div>
     </div>
   </div>`;

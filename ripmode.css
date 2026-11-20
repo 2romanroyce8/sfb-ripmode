@@ -161,3 +161,57 @@ html:has(.shell[data-appearance="light"]) .calday{background:#e9e9e7;color:#222}
 html:has(.shell[data-appearance="light"]) .calday:hover:not(:disabled){background:#ddd}
 html:has(.shell[data-appearance="light"]) .calday--sel{background:#111;color:#fff}
 html:has(.shell[data-appearance="light"]) .calday--sel .calday-dot{background:#fff}
+
+/* ---------- Button / pill / badge hardening + iMessage + Recents (2026-11-20) ----------
+   Root cause of the Connections "Key pending" oval and the Call Log "New"
+   circles: .badge/.pill are flex items in rows (.kv, .conv-item) whose
+   default align-items:stretch stretched them to the full row height, and
+   with no white-space:nowrap a long label wrapped inside. A stretched,
+   wrapped pill reads as a circle. Fix: every pill/badge is nowrap,
+   shrink-proof, and self-aligned to its natural height. One consistent
+   pill style app-wide — same font, radius, padding; colour only marks
+   state (green connected, amber pending, grey neutral). */
+.badge{white-space:nowrap;flex-shrink:0;align-self:flex-start;line-height:1.35}
+.pill{white-space:nowrap;flex-shrink:0;align-self:center}
+.kv{align-items:flex-start}
+.kv>.badge{margin-top:1px}
+.btn{white-space:nowrap}
+#book-meeting-btn{white-space:normal} /* full-width CTA: may wrap on very narrow screens */
+.slot,.day{white-space:nowrap}
+.role-chip{white-space:nowrap;flex-shrink:0}
+.conv-item{align-items:center}
+
+/* ---------- iMessage-style conversations ---------- */
+.im-avatar{width:48px;height:48px;border-radius:50%;background:#3a3a3f;border:1px solid var(--line);display:flex;align-items:center;justify-content:center;font-size:16px;font-weight:700;color:#fff;flex:none}
+.im-conv-main{flex:1;min-width:0;text-align:left}
+.im-conv-main b{display:block;font-size:15px}
+.im-preview{display:block;font-size:13px;color:var(--muted);white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.im-conv-right{display:flex;flex-direction:column;align-items:flex-end;gap:6px;flex:none}
+.im-time{font-size:12px;color:var(--muted);white-space:nowrap}
+.im-unread{width:10px;height:10px;border-radius:50%;background:#0a84ff;flex:none}
+.msg{border-radius:18px}
+.msg.in{background:#26262b;align-self:flex-start;border-bottom-left-radius:4px}
+.msg.out{background:#0a84ff;color:#fff;align-self:flex-end;border-bottom-right-radius:4px}
+.im-stamp{text-align:center;font-size:12px;color:var(--muted);margin:6px 0 2px}
+.im-sys{text-align:center;font-size:12px;color:var(--muted);margin:8px 0}
+.chat-input{align-items:center}
+.chat-input input{border-radius:20px}
+.chat-send{width:34px;height:34px;flex:none;border-radius:50%;border:0;background:#0a84ff;color:#fff;font-size:18px;line-height:1;cursor:pointer;display:flex;align-items:center;justify-content:center;padding:0}
+.chat-send:disabled{opacity:.4}
+
+/* ---------- iPhone Recents-style call list ---------- */
+.recents{display:flex;flex-direction:column}
+.recent-item{display:flex;align-items:center;justify-content:space-between;gap:10px;width:100%;padding:12px 4px;background:transparent;border:0;border-bottom:1px solid var(--line);cursor:pointer;text-align:left;color:var(--text)}
+.recent-item:last-child{border-bottom:0}
+.recent-main{flex:1;min-width:0}
+.recent-main b{display:block;font-size:15px;font-weight:600}
+.recent-main b.missed{color:#ff453a}
+.recent-sub{font-size:13px;color:var(--muted)}
+.recent-sub.missed{color:#ff453a}
+.recent-right{display:flex;align-items:center;gap:8px;flex:none}
+.recent-time{font-size:13px;color:var(--muted);white-space:nowrap}
+.recent-chev{font-size:20px;color:var(--muted);line-height:1}
+/* light mode: keep iMessage bubbles + avatars readable */
+html:has(.shell[data-appearance="light"]) .msg.in{background:#e9e9eb;color:#111}
+html:has(.shell[data-appearance="light"]) .msg.out{background:#007aff;color:#fff}
+html:has(.shell[data-appearance="light"]) .im-avatar{background:#d9d9d9;color:#333;border-color:#ccc}
