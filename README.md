@@ -285,3 +285,36 @@ never runs and doLogin() is never called. The fix:
   live-browser Enter test (non-allowlisted username + 4 digits + Enter):
   it must show a visible rejection and stay on /ripmode. Do not claim
   Enter works until that live check passes.
+
+## Dashboard logo fix — sidebar star orb replaced with SFB logo (2026-11-20)
+Rome signed in as @romanroyce and the dashboard still showed the template's
+white asterisk/star orb (OrbMark) in the sidebar header next to "SFB Connect"
+/ "RIP MODE dialer" — the same star already removed from the login. Fix:
+- index.html: the sidebar brand `<span class="orb orb--md">` star SVG is
+  replaced with `<img class="brand-logo">` using the SAME sixfigureblueprints.com
+  cube-logo data URI as the login (brand/sfb-blueprint-mark.png, verbatim).
+  The data URI is duplicated, not shared via JS — the sidebar renders even if
+  app.js fails. "SFB Connect" / "RIP MODE dialer" text kept (the PNG is the
+  mark only, no wordmark, so there is no duplicate text).
+- Sizing: .brand-logo is 34x34px with object-fit:contain, matching the old
+  orb--md slot in the flex .brand row — fully visible, not cropped, not
+  stretched. Light-mode rule inverts it (mirrors the template's .orb
+  invert treatment) so the white mark stays visible on a light sidebar.
+- Other "logo-like" spots left alone: the "S" letter avatar in the "Six
+  Figure Blueprints / Selected workspace" card and the "S" workspace letters
+  in the account menu are letter avatars, not the orb; account-menu avatars
+  are user initials. No other orb/star SVG exists in the app HTML/JS (the
+  .orb rules left in style.css are dead template CSS for markup that no
+  longer exists). Login untouched; no functionality changed.
+- Verified 2026-11-20 ~14:01 UTC: deployed with deploy.py (KV binding
+  preserved, worker modified 14:01:02 UTC). Live text fetch of
+  sixfigureblueprints.com/ripmode serves the new page: brand-logo img x1,
+  .brand-logo CSS rules x2, zero orb--md, zero star-SVG lines, login intact
+  ("Yooo, welcome back!"), Google Voice (213) 495-3536. Read-only
+  /auth/check: romanroyce hasAccount:true (Rome signed in himself — never
+  touched), loganwells/braylengarrett hasAccount:false. No accounts created,
+  logged in as, or modified; no E2E run. Zero occurrences of the personal
+  forwarding number in the app/worker.
+- Honest limitation: the dashboard is behind login, so it could not be
+  visually verified in this session without Rome's passcode. Rome must check
+  the sidebar himself after a hard refresh.
