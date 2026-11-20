@@ -728,19 +728,30 @@ function bindTab() {
   else if (currentTab === "calllog") bindCallLog();
 }
 
-/* The Sign In button is a submit button inside #login-form, so the form's
-   submit is the single entry point (Enter key included) — no separate
-   click/keydown handlers, which would double-fire doLogin. This listener's
-   preventDefault() is the ONLY thing stopping a native navigation: the form
-   carries no inline onsubmit/action in index.html, deliberately. An inline
-   onsubmit handler returning false swallows the submit event before this
-   listener runs, so Enter silently did nothing at all (seen live 2026-11-20)
-   — never re-add it. A native GET submit to /ripmode?username=... 404s at the
-   Cloudflare route level (query-string URLs never reach this worker), so if
-   this file ever fails to load, Enter will 404 instead of silently dying —
-   that failure is loud, which is the point. */
-const loginForm = $("#login-form");
-if (loginForm) loginForm.addEventListener("submit", (e) => { e.preventDefault(); doLogin(); });
+/* ---------- login submit: NO <form> (2026-11-20) ----------
+   ROOT CAUSE of the Enter-key 404s (found 2026-11-20, proven with live
+   requests): the page is /ripmode with NO trailing slash, so the browser
+   resolved the RELATIVE "app.js" / "style.css" against the site root ->
+   /app.js and /style.css -> the homepage (Next.js) worker, which 404s.
+   app.js NEVER loaded in a real browser, so the submit listener never
+   registered and Enter natively GET-submitted the form to
+   /ripmode?username=... -> the homepage 404. Shell-side checks fetched
+   /ripmode/app.js directly and looked fine, which hid it. Fixed by
+   (a) absolute asset URLs /ripmode/app.js?v=4 and /ripmode/style.css?v=4
+   in index.html, and (b) removing the <form> entirely: with no form
+   there is nothing for Enter to submit natively. Sign in is one path
+   only — doLogin() — called by the button click and by an explicit Enter
+   keydown on the login inputs. Never re-add a <form>, a submit listener,
+   or a relative asset URL here. */
+const loginBtn = $("#login-btn");
+if (loginBtn) loginBtn.addEventListener("click", () => { doLogin(); });
+["#login-username", "#login-passcode", "#login-confirm"].forEach((sel) => {
+  const el = $(sel);
+  if (!el) return;
+  el.addEventListener("keydown", (e) => {
+    if (e.key === "Enter") { e.preventDefault(); doLogin(); }
+  });
+});
 $("#login-username").addEventListener("input", async (e) => {
   const u = e.target.value.trim().toLowerCase();
   if (ALLOWED_USERS.includes(u)) {

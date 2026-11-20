@@ -4,7 +4,7 @@
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
 <title>RIP MODE — SFB Connect Dialer</title>
-<link rel="stylesheet" href="style.css">
+<link rel="stylesheet" href="/ripmode/style.css?v=4">
 <style>
 /* Critical fallback: if style.css ever fails to load, the page still renders
    as a dark FULL-SCREEN login — never a plain white unstyled page.
@@ -26,12 +26,17 @@ html,body{background:#080808;color:#f5f5f5;font-family:-apple-system,BlinkMacSys
 <body class="sfb-hq sfb-staff">
 <div id="app">
   <!-- LOGIN — dark FULL-SCREEN (2026-11-20). Plain inputs: no readonly,
-       no disabled, nothing clears what the user types. The form submits
-       normally into app.js, whose submit listener calls preventDefault()
-       and then doLogin() — that is the ONLY thing stopping navigation.
-       Do NOT add inline onsubmit/action hacks: an inline onsubmit handler
-       returning false swallows the submit event so the app.js handler
-       never runs, and Enter then does nothing at all (seen live 2026-11-20). -->
+       no disabled, nothing clears what the user types.
+       NO <form> HERE, deliberately — see the root-cause note below. There
+       is no form for Enter to submit natively, so Sign in can only happen
+       through app.js doLogin() (button click or Enter keydown).
+       Asset URLs are ABSOLUTE (/ripmode/app.js?v=4, /ripmode/style.css?v=4):
+       the page is /ripmode with NO trailing slash, so the browser resolved
+       the old RELATIVE "app.js"/"style.css" against the site root -> /app.js
+       and /style.css -> the homepage (Next.js) worker, which 404s. app.js
+       NEVER loaded in a real browser, so no listener ever registered and
+       Enter natively GET-submitted to /ripmode?username=... -> homepage 404
+       (seen live 2026-11-20, twice). Never go back to relative asset URLs. -->
   <div id="login-screen" class="screen">
     <div class="login-page">
       <div class="login-card">
@@ -44,25 +49,22 @@ html,body{background:#080808;color:#f5f5f5;font-family:-apple-system,BlinkMacSys
         <h1>Yooo, welcome back!</h1>
         <p class="login-sub">First time here? <b>Sign up for free</b></p>
         <div id="login-error" class="error hidden"></div>
-        <!-- The submit event is handled in place by app.js: its listener calls
-             preventDefault() and then doLogin() (fetch + visible result). There
-             is deliberately NO inline onsubmit/action here — an inline onsubmit
-             handler returning false swallows the submit event before the app.js
-             listener runs, so Enter silently did nothing (seen live 2026-11-20).
-             preventDefault in the JS handler is the only navigation guard. -->
-        <form id="login-form" autocomplete="off" novalidate>
+        <!-- No <form>: Enter is wired explicitly in app.js (keydown ->
+             doLogin()). With no form, a native GET submit to
+             /ripmode?username=... is impossible. -->
+        <div id="login-box">
           <label class="login-field"><span>Username</span>
-            <input id="login-username" type="text" name="username" autocomplete="off" placeholder="romanroyce" autocapitalize="off" autocorrect="off" spellcheck="false">
+            <input id="login-username" type="text" autocomplete="off" placeholder="romanroyce" autocapitalize="off" autocorrect="off" spellcheck="false">
             <span class="field-hint">Username, not your email &mdash; romanroyce, loganwells, or braylengarrett</span>
           </label>
           <label class="login-field"><span>4-digit passcode</span>
-            <input id="login-passcode" type="password" name="passcode" autocomplete="new-password" inputmode="numeric" pattern="[0-9]{4}" maxlength="4" placeholder="&bull;&bull;&bull;&bull;">
+            <input id="login-passcode" type="password" autocomplete="new-password" inputmode="numeric" pattern="[0-9]{4}" maxlength="4" placeholder="&bull;&bull;&bull;&bull;">
           </label>
           <label id="confirm-wrap" class="login-field hidden"><span>Confirm passcode</span>
-            <input id="login-confirm" type="password" name="new-passcode" autocomplete="new-password" inputmode="numeric" pattern="[0-9]{4}" maxlength="4" placeholder="&bull;&bull;&bull;&bull;">
+            <input id="login-confirm" type="password" autocomplete="new-password" inputmode="numeric" pattern="[0-9]{4}" maxlength="4" placeholder="&bull;&bull;&bull;&bull;">
           </label>
-          <button id="login-btn" type="submit" class="login-primary">Sign in</button>
-        </form>
+          <button id="login-btn" type="button" class="login-primary">Sign in</button>
+        </div>
         <p id="login-hint" class="login-hint">First time signing in with a username? You will set a 4-digit passcode and it is saved for next time.</p>
         <p class="login-hint">No email passcode reset. If you forget your passcode, your account is cleared and you sign up again.</p>
         <p class="login-hint small">Only romanroyce, loganwells and braylengarrett can sign in.</p>
@@ -130,6 +132,6 @@ html,body{background:#080808;color:#f5f5f5;font-family:-apple-system,BlinkMacSys
     </div>
   </div>
 </div>
-<script src="app.js"></script>
+<script src="/ripmode/app.js?v=4"></script>
 </body>
 </html>

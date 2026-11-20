@@ -19,6 +19,13 @@ Cal.com-mirrored Calendar, Call Log + conversations, Connections.
   auto-dials, auto-plays a script, auto-drops voicemail, or auto-sends SMS.
   Meeting emails are queued until Resend is wired; SMS opens Google Voice
   with the text ready — never claimed as sent automatically.
+- Login has NO <form> (2026-11-20): Sign in is a `type="button"` button
+  plus an explicit Enter keydown on the login inputs, both calling the one
+  doLogin() path. With no form, Enter can never trigger a native GET
+  submit to /ripmode?username=... .
+- Asset URLs in index.html are ABSOLUTE (/ripmode/app.js?v=4,
+  /ripmode/style.css?v=4) — never relative. See "Enter-key 404 root cause"
+  below; relative URLs broke the app in real browsers.
 - Backend: Cloudflare Worker `sfb-ripmode-router` + KV namespace `ripmode-data`
   (shared state: leads, call log, conversations, meetings, session stats).
   The worker serves the frontend itself from embedded files.
@@ -57,6 +64,35 @@ the /billme router.) No code or DNS change needed.
   no bindings and silently DROPS the KV binding — the API then throws 1101
   on every call that touches KV (found 2026-11-20, fixed by re-uploading
   with the binding; no data was lost, KV lives outside the worker).
+
+## Enter-key 404 root cause (2026-11-20, found by live-request diagnosis)
+Pressing Enter on the login twice sent the browser to
+`/ripmode?username=...` and the homepage 404 ("This Page Isn't Part of the
+Build") — even though the submit listener was present in the served
+app.js, the form id matched, `node --check` passed, and shell-side fetches
+of /ripmode/app.js looked perfect. The real cause: the page URL is
+`/ripmode` with NO trailing slash, so the browser resolved the RELATIVE
+`app.js` / `style.css` against the site root -> `/app.js` and `/style.css`
+-> those paths do NOT match the worker routes (/ripmode, /ripmode/*), so
+they went to the homepage (Next.js) worker, which 404s. Verified live:
+`GET sixfigureblueprints.com/app.js` = homepage 404 HTML, while
+`GET sixfigureblueprints.com/ripmode/app.js` = the real file. So in a real
+browser app.js NEVER loaded: no listener, no doLogin, nothing — and the
+login only looked right because of the inline fallback CSS (style.css
+never loaded either, which is also why the dashboard looked unstyled).
+Fix (deployed 2026-11-20 13:40 UTC): absolute asset URLs
+`/ripmode/app.js?v=4` and `/ripmode/style.css?v=4` in index.html, AND the
+<form> removed entirely (div + type="button" + explicit Enter keydown ->
+doLogin()). Live fetch after deploy confirms the served index.html has no
+<form>, absolute versioned asset URLs, and the served app.js matches local
+byte-for-byte. E2E API test as a temporary loganwells account passed
+(signup 200, duplicate rejected, wrong passcode 401, correct passcode 200,
+state loads Jax + Performance, logout, post-logout 401); test user and
+sessions deleted, all three users back to hasAccount:false, state untouched.
+Note: one immediate re-login 401 right after signup was KV read-after-write
+propagation lag across edge POPs, not a code bug — the signup token itself
+worked, and the same login succeeded a minute later. The app logs users in
+directly from the signup token, so this lag cannot bite a real sign-in.
 
 ## UI — SFB Staff UI Template, applied exactly (2026-11-20)
 Rome asked for the SFB Staff UI Template to be used exactly as-is, not
