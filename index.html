@@ -1,0 +1,59 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>RIP MODE — SFB Connect Dialer</title>
+<link rel="stylesheet" href="style.css">
+</head>
+<body>
+<div id="app">
+  <!-- LOGIN -->
+  <div id="login-screen" class="screen">
+    <div class="login-card">
+      <div class="login-brand">SFB CONNECT</div>
+      <h1>RIP MODE</h1>
+      <p class="login-sub">The dialer. Sign in to start ripping.</p>
+      <div id="login-error" class="error hidden"></div>
+      <label>Username
+        <input id="login-username" type="text" autocomplete="username" placeholder="romanroyce" autocapitalize="off" spellcheck="false">
+      </label>
+      <label>Password
+        <input id="login-password" type="password" autocomplete="current-password" placeholder="Your password">
+      </label>
+      <label id="confirm-wrap" class="hidden">Confirm password
+        <input id="login-confirm" type="password" autocomplete="new-password" placeholder="Repeat your password">
+      </label>
+      <button id="login-btn" class="btn-primary">Sign in</button>
+      <p id="login-hint" class="login-hint">First time signing in with a username? You will set your password (min 8 characters) and it is saved for next time.</p>
+      <p class="login-hint">No email password reset. If you forget your password, your account is cleared and you sign up again.</p>
+      <p class="login-hint small">Only romanroyce, loganwells and braylengarrett can sign in.</p>
+    </div>
+  </div>
+
+  <!-- DASHBOARD -->
+  <div id="dashboard" class="screen hidden">
+    <header class="topbar">
+      <div class="topbar-left">
+        <span class="brand">SFB CONNECT // RIP MODE</span>
+        <span class="gv-badge">Calling from Google Voice (213) 495-3536</span>
+      </div>
+      <div class="topbar-right">
+        <span id="whoami" class="whoami"></span>
+        <button id="logout-btn" class="btn-ghost">Log out</button>
+      </div>
+    </header>
+    <nav class="tabs">
+      <button data-tab="rip" class="tab active">RIP MODE</button>
+      <button data-tab="leads" class="tab">Leads</button>
+      <button data-tab="pipeline" class="tab">Pipeline</button>
+      <button data-tab="calendar" class="tab">Calendar</button>
+      <button data-tab="calllog" class="tab">Call Log</button>
+      <button data-tab="connections" class="tab">Connections</button>
+    </nav>
+    <main id="main"></main>
+  </div>
+</div>
+<script src="app.js"></script>
+</body>
+</html>

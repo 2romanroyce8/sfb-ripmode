@@ -1,0 +1,1 @@
+{"$schema":"https://jsonschema.org/schema","rewrites":[{"destination":"/app.js","source":"/ripmode/app.js"},{"destination":"/style.css","source":"/ripmode/style.css"},{"destination":"/index.html","source":"/ripmode"},{"destination":"/index.html","source":"/ripmode/:path*"},{"destination":"/index.html","source":"/"}]}
