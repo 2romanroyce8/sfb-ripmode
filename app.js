@@ -1353,6 +1353,7 @@ function renderAiRep() {
       <div class="stat-box"><div class="num">${st.callsTotal || 0}</div><div class="lbl">Total calls</div></div>
     </div>
     <button class="btn" id="airep-refresh" style="margin-top:12px">Refresh calls</button>
+    <a class="btn" href="https://sfb-receptionist.2romanroyce8.workers.dev/demo" target="_blank" rel="noopener" style="margin-top:12px">Hear the demo</a>
   </div>
   <div class="section-title">Recent calls</div>
   ${calls.length ? calls.map((c) => {
