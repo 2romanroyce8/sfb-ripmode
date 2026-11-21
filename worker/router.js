@@ -223,6 +223,68 @@ async function handleApi(request, env) {
     return json({ token });
   }
 
+  // ---- AI receptionist (session required; config saves are owner-only) ----
+  // The dashboard's AI Rep tab talks to the sfb-receptionist worker through
+  // these proxy endpoints. The receptionist WORKER_KEY is held as a SECRET
+  // env var (RECEPTIONIST_KEY) on THIS worker — it is never sent to the
+  // browser, never in a URL the user can see, and never in any response.
+  // The proxy adds it server-side only.
+  const RECEPTIONIST_BASE = "https://sfb-receptionist.2romanroyce8.workers.dev";
+  const AIREP_NUMBER = "+12393499491";
+  const AIREP_ENGINE = "ConversationRelay + Workers AI (Llama 3.3 70B)";
+  const AIREP_COST_PER_MIN = 0.0785;
+  async function receptionistFetch(rpath, method, rbody) {
+    const key = env.RECEPTIONIST_KEY || "";
+    if (!key) return { ok: false, status: 503, data: { error: "AI receptionist is not connected yet — the dashboard key is missing." } };
+    const sep = rpath.includes("?") ? "&" : "?";
+    try {
+      const res = await fetch(RECEPTIONIST_BASE + rpath + sep + "key=" + encodeURIComponent(key), {
+        method: method || "GET",
+        headers: { "Content-Type": "application/json" },
+        body: rbody ? JSON.stringify(rbody) : undefined,
+      });
+      const data = await res.json().catch(() => ({}));
+      return { ok: res.ok, status: res.status, data };
+    } catch (e) {
+      return { ok: false, status: 502, data: { error: "AI receptionist is not reachable right now." } };
+    }
+  }
+  if (path === "/api/airep/status" && request.method === "GET") {
+    const [callsRes, cfgRes] = await Promise.all([
+      receptionistFetch("/calls"), receptionistFetch("/api/config"),
+    ]);
+    if (!callsRes.ok) return err(callsRes.data.error || "AI receptionist is not reachable right now.", callsRes.status === 503 ? 503 : 502);
+    const calls = callsRes.data.calls || [];
+    const todayET = new Date().toLocaleDateString("en-US", { timeZone: "America/New_York" });
+    const callsToday = calls.filter((c) => {
+      try { return new Date(c.startedAt).toLocaleDateString("en-US", { timeZone: "America/New_York" }) === todayET; }
+      catch (_) { return false; }
+    }).length;
+    return json({
+      ok: true, live: true, number: AIREP_NUMBER, engine: AIREP_ENGINE,
+      costPerMin: AIREP_COST_PER_MIN, callsToday, callsTotal: calls.length,
+      businessName: (cfgRes.ok && cfgRes.data.config && cfgRes.data.config.businessName) || "Six Figure Blueprints",
+    });
+  }
+  if (path === "/api/airep/calls" && request.method === "GET") {
+    const r = await receptionistFetch("/calls");
+    if (!r.ok) return err(r.data.error || "AI receptionist is not reachable right now.", r.status === 503 ? 503 : 502);
+    return json({ ok: true, calls: r.data.calls || [], count: r.data.count || 0 });
+  }
+  if (path === "/api/airep/config" && request.method === "GET") {
+    const r = await receptionistFetch("/api/config");
+    if (!r.ok) return err(r.data.error || "AI receptionist is not reachable right now.", r.status === 503 ? 503 : 502);
+    return json({ ok: true, config: r.data.config || {}, isCustom: !!r.data.isCustom });
+  }
+  if (path === "/api/airep/config" && request.method === "POST") {
+    if (username !== "romanroyce") return err("Only the owner can change the AI receptionist.", 403);
+    const patch = await request.json().catch(() => null);
+    if (!patch || typeof patch !== "object" || Array.isArray(patch)) return err("No settings were sent.");
+    const r = await receptionistFetch("/api/config", "POST", patch);
+    if (!r.ok) return err(r.data.error || "Could not save the receptionist settings.", r.status);
+    return json({ ok: true, config: r.data.config || {}, isCustom: true });
+  }
+
   if (path === "/api/state" && request.method === "GET") {
     return json(await getState(env));
   }

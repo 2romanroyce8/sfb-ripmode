@@ -608,6 +608,7 @@ const TAB_META = {
   pipeline: ["Client Pipeline", "5 stages. Move a card with the arrows or the stage picker."],
   calendar: ["Calendar", "Cal.com — pick an event type, a day, and a time. Booking opens your real Cal.com link: https://cal.com/roman-royce/30min"],
   calllog: ["Call Log", "Every call, mirrored as a conversation. Tap a lead to open its chat thread."],
+  airep: ["AI Rep", "See every call the AI receptionist takes — and change what callers hear on the next call."],
   connections: ["Connections", "Honest status — nothing here is marked connected unless it was verified."],
 };
 function updateNav() {
@@ -627,6 +628,7 @@ function onNavigate(next) {
   setMenuOpen(false);
   window.scrollTo(0, 0);
   updateNav();
+  if (next === "airep") loadAiRep(); // loads status + calls + config, then re-renders
   render();
 }
 function setMenuOpen(open) {
@@ -735,6 +737,7 @@ function render() {
   else if (currentTab === "pipeline") body = renderPipeline();
   else if (currentTab === "calendar") body = renderCalendar();
   else if (currentTab === "calllog") body = renderCallLog();
+  else if (currentTab === "airep") body = renderAiRep();
   else if (currentTab === "connections") body = renderConnections();
   main.innerHTML = `<div class="page-heading"><div><span class="eyebrow">YOUR WORKSPACE</span><h1>${esc(meta[0])}</h1>${sub ? `<p>${esc(sub)}</p>` : ""}</div></div>` + body;
   bindTab();
@@ -1284,6 +1287,155 @@ function bindCallLog() {
   if (inp) inp.addEventListener("keydown", (e) => { if (e.key === "Enter") sendMsg(); });
 }
 
+/* ---------- AI REP (AI receptionist) ----------
+   SEE: live status + recent inbound calls from the sfb-receptionist
+   worker, via the session-checked /api/airep/* proxy in the router —
+   the receptionist WORKER_KEY never reaches the browser.
+   CUSTOMIZE: owner-only saves. The greeting, business name, booking
+   link + toggle, message-taking toggle, offers and description are
+   stored in the receptionist KV (config:live) and the NEXT inbound call
+   reads them fresh — a save takes effect immediately, no redeploy.
+   The owner's notify number is NOT editable here (worker env var). */
+let aiRepStatus = null, aiRepCalls = [], aiRepConfig = null;
+let aiRepLoaded = false, aiRepLoading = false, aiRepError = "", aiRepNote = "";
+let aiRepExpanded = {};
+async function loadAiRep() {
+  if (aiRepLoading) return;
+  aiRepLoading = true; aiRepError = "";
+  try {
+    const [st, calls, cfg] = await Promise.all([
+      api("/airep/status", "GET"),
+      api("/airep/calls", "GET"),
+      api("/airep/config", "GET"),
+    ]);
+    aiRepStatus = st; aiRepCalls = calls.calls || []; aiRepConfig = cfg.config || {};
+    aiRepLoaded = true;
+  } catch (e) {
+    aiRepError = e.message || "Could not load the AI receptionist.";
+  }
+  aiRepLoading = false;
+  if (currentTab === "airep") render();
+}
+function aiRepOutcome(c) {
+  const map = {
+    "booked-link-sent": ["Booked", "green"], booking: ["Booking", "green"],
+    "message-taken": ["Message", ""], question: ["Question", ""],
+    silent: ["Missed", "amber"], "no-relay-session": ["Missed", "amber"],
+    other: ["Other", ""],
+  };
+  return map[c.outcome] || [(c.outcome || "Other"), ""];
+}
+function aiRepWhen(iso) {
+  try {
+    return new Date(iso).toLocaleString("en-US", {month: "short", day: "numeric", hour: "numeric", minute: "2-digit", timeZone: "America/New_York"});
+  } catch (_) { return iso || ""; }
+}
+function renderAiRep() {
+  if (!aiRepLoaded) {
+    return `<div class="card">${aiRepError
+      ? `<div class="error">${esc(aiRepError)}</div><p class="notice">The receptionist worker did not answer. Check the Connections tab — if Twilio is live, try the refresh button below.</p>`
+      : `<div class="notice">Loading the AI receptionist…</div>`}
+      <button class="btn" id="airep-refresh">Refresh</button></div>`;
+  }
+  const st = aiRepStatus || {};
+  const cfg = aiRepConfig || {};
+  const isOwner = roleFor(me) === "owner";
+  const dis = isOwner ? "" : "disabled";
+  const calls = aiRepCalls || [];
+  return `
+  <div class="card">
+    <div class="kv"><span><b>AI Receptionist</b><br><span style="color:var(--muted);font-size:13px">Answers ${esc(st.number || "+1 239 349 9491")} 24/7 as ${esc(st.businessName || cfg.businessName || "Six Figure Blueprints")}</span></span>
+    <span class="badge ${st.live ? "green" : "amber"}">${st.live ? "Live" : "Not connected"}</span></div>
+    <div class="kv"><span>Engine</span><span>${esc(st.engine || "ConversationRelay + Workers AI")}</span></div>
+    <div class="kv"><span>Cost</span><span>≈ $0.0785 / min — a 3-min call ≈ $0.24</span></div>
+    <div class="stat-boxes" style="margin-top:12px">
+      <div class="stat-box"><div class="num">${st.callsToday || 0}</div><div class="lbl">Calls today</div></div>
+      <div class="stat-box"><div class="num">${st.callsTotal || 0}</div><div class="lbl">Total calls</div></div>
+    </div>
+    <button class="btn" id="airep-refresh" style="margin-top:12px">Refresh calls</button>
+  </div>
+  <div class="section-title">Recent calls</div>
+  ${calls.length ? calls.map((c) => {
+    const [label, cls] = aiRepOutcome(c);
+    const open = !!aiRepExpanded[c.callSid || c.id];
+    const turns = c.turns || [];
+    return `<div class="card" style="margin-bottom:12px">
+      <div class="kv"><span><b>${esc(c.from || "Unknown caller")}</b><br><span style="color:var(--muted);font-size:13px">${esc(aiRepWhen(c.startedAt))}${c.durationSec ? " · " + fmtElapsed(c.durationSec) : ""}${c.bookingLinkSent ? " · Booking link texted" : ""}</span></span>
+      <span class="badge ${cls}">${esc(label)}</span></div>
+      <p class="lead-line">${esc(c.summary || "No summary yet.")}</p>
+      <button class="btn" data-airep-expand="${esc(c.callSid || c.id)}">${open ? "Hide transcript" : "Show transcript"}</button>
+      ${open ? `<div style="margin-top:10px">${turns.length ? turns.map((t) => `<div class="lead-line"><b>${t.role === "user" ? "Caller" : "Receptionist"}:</b> ${esc(t.text)}</div>`).join("") : `<div class="notice">No transcript — the caller hung up before speaking.</div>`}
+      ${c.sms ? `<p class="notice">Owner summary SMS: ${c.sms.ok ? "sent" : "not sent (" + esc(c.sms.error || "unknown") + ")"}</p>` : ""}</div>` : ""}
+    </div>`;
+  }).join("") : `<div class="card"><div class="notice">No inbound calls yet. Call ${esc(st.number || "+1 239 349 9491")} from a phone to test it — the call will show up here.</div></div>`}
+  <div class="section-title">Customize — what callers hear</div>
+  <div class="card">
+    ${isOwner ? "" : `<p class="notice">Only the owner can change the receptionist — you're signed in as staff. You can see calls and settings, but saving is owner-only.</p>`}
+    <div class="field"><label>Greeting — the first thing every caller hears</label>
+      <textarea class="input" id="airep-greeting" rows="4" ${dis}>${esc(cfg.greeting || "")}</textarea></div>
+    <div class="grid2">
+      <div class="field"><label>Business name</label><input class="input" id="airep-business" type="text" value="${esc(cfg.businessName || "")}" ${dis}></div>
+      <div class="field"><label>Short name (used in the summary text to you)</label><input class="input" id="airep-short" type="text" value="${esc(cfg.shortName || "")}" ${dis}></div>
+    </div>
+    <div class="field"><label>What the receptionist offers callers</label>
+      <textarea class="input" id="airep-offers" rows="2" ${dis}>${esc(cfg.offers || "")}</textarea></div>
+    <div class="field"><label>About the business — only verified facts; this is all it may say about the company</label>
+      <textarea class="input" id="airep-desc" rows="3" ${dis}>${esc(cfg.description || "")}</textarea></div>
+    <div class="grid2">
+      <div class="field"><label>Booking link (Cal.com)</label><input class="input" id="airep-booking-link" type="url" value="${esc(cfg.bookingLink || "")}" ${dis}></div>
+      <div class="field"><label>Booking label — what the call is called</label><input class="input" id="airep-booking-label" type="text" value="${esc(cfg.bookingLabel || "")}" ${dis}></div>
+    </div>
+    <div class="dispo-row" style="margin-bottom:12px">
+      <label class="btn" style="display:flex;align-items:center;gap:8px"><input type="checkbox" id="airep-booking-on" ${cfg.bookingEnabled ? "checked" : ""} ${dis}> Offer booking</label>
+      <label class="btn" style="display:flex;align-items:center;gap:8px"><input type="checkbox" id="airep-message-on" ${cfg.messageTakingEnabled ? "checked" : ""} ${dis}> Take messages</label>
+    </div>
+    <p class="notice">Press 1 books a call and press 2 leaves a message — the greeting above says so. If you turn booking or messages off, update the greeting to match, or callers will be offered something that is off.</p>
+    ${isOwner ? `<button class="btn btn--primary" id="airep-save">Save — live for the next call</button>` : ""}
+    <div id="airep-save-note" class="${aiRepNote ? (aiRepNote.indexOf("Saved") === 0 ? "ok-note" : "error") : "hidden"}" style="margin-top:10px">${esc(aiRepNote)}</div>
+    <p class="notice">The owner's notify number for the after-call summary text can't be changed from here — it stays as set on the worker.</p>
+  </div>`;
+}
+function bindAiRep() {
+  const refresh = $("#airep-refresh");
+  if (refresh) refresh.onclick = () => { aiRepLoading = false; loadAiRep(); };
+  document.querySelectorAll("[data-airep-expand]").forEach((b) => b.onclick = () => {
+    const id = b.dataset.airepExpand;
+    aiRepExpanded[id] = !aiRepExpanded[id];
+    render();
+  });
+  const save = $("#airep-save");
+  if (save) save.onclick = async () => {
+    const greeting = $("#airep-greeting").value.trim();
+    const bookingLink = $("#airep-booking-link").value.trim();
+    const bookingEnabled = $("#airep-booking-on").checked;
+    const note = $("#airep-save-note");
+    const fail = (m) => { if (note) { note.textContent = m; note.className = "error"; } };
+    if (greeting.length < 10) { fail("Greeting is too short — write what callers should hear first."); return; }
+    if (bookingLink && !/^https:\/\//.test(bookingLink)) { fail("Booking link must be a full https:// link."); return; }
+    if (bookingEnabled && !bookingLink) { fail("Booking is turned on but there is no booking link — add a link or turn booking off."); return; }
+    save.disabled = true; save.textContent = "Saving…";
+    try {
+      const r = await api("/airep/config", "POST", {
+        greeting,
+        businessName: $("#airep-business").value.trim(),
+        shortName: $("#airep-short").value.trim(),
+        offers: $("#airep-offers").value.trim(),
+        description: $("#airep-desc").value.trim(),
+        bookingLink,
+        bookingLabel: $("#airep-booking-label").value.trim(),
+        bookingEnabled,
+        messageTakingEnabled: $("#airep-message-on").checked,
+      });
+      aiRepConfig = r.config || {};
+      aiRepNote = "Saved — live for the next call.";
+      render();
+    } catch (e) {
+      save.disabled = false; save.textContent = "Save — live for the next call";
+      fail("Save failed — " + (e.message || "the receptionist did not answer."));
+    }
+  };
+}
+
 /* ---------- CONNECTIONS ---------- */
 function renderConnections() {
   const rows = [
@@ -1311,6 +1463,7 @@ function bindTab() {
   else if (currentTab === "pipeline") bindPipeline();
   else if (currentTab === "calendar") bindCalendar();
   else if (currentTab === "calllog") bindCallLog();
+  else if (currentTab === "airep") bindAiRep();
 }
 
 /* ---------- login submit: NO <form> (2026-11-20) ----------

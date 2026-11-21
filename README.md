@@ -763,3 +763,64 @@ three can be on calls at the same time.
   /ripmode 200 serving v=12, served app.js?v=12, style.css?v=12 and
   index.html match local byte-for-byte. NO NUMBER DIALED. Zero
   occurrences of Rome's personal number in any file.
+
+## AI Rep tab (2026-11-21, v=13) — see + customize the AI receptionist
+
+New sidebar tab "AI Rep" (after Call Log), same template shell/cards/pills
+as the other tabs. All three users can VIEW it; only the owner
+(romanroyce) can SAVE changes — enforced in the browser AND in the
+worker (403 for staff).
+
+SEE:
+- Status card: Live, answering number +1 239 349 9491, engine
+  (ConversationRelay + Workers AI Llama 3.3 70B), cost ≈ $0.0785/min,
+  calls today / total (from the receptionist KV).
+- Recent calls: time (ET), caller number, outcome pill (Booked / Booking /
+  Message / Question / Missed), AI summary; tap a call to expand the full
+  transcript (Caller / Receptionist turns) and the owner-SMS status.
+
+CUSTOMIZE (owner only) — what callers hear on the NEXT call:
+- Greeting (first thing every caller hears), business name, short name,
+  what the receptionist offers, about-the-business facts (only verified
+  facts — this is all it may say about the company), booking link +
+  booking label + offer-booking toggle, take-messages toggle.
+- Save shows "Saved — live for the next call." A failed save shows the
+  real error; a failed save never wipes what was typed.
+- NOT editable from this tab, by design: the owner's notify number
+  (NOTIFY_NUMBER — worker env var on sfb-receptionist) and the voice
+  model / token limits.
+
+HOW IT WORKS (proxy, no key in the browser):
+- The receptionist WORKER_KEY is a SECRET env var (RECEPTIONIST_KEY) on
+  sfb-ripmode-router, set via the Cloudflare API (never in a file, never
+  in the client bundle, never in a URL). The router adds it server-side
+  only: GET /api/airep/status, GET /api/airep/calls,
+  GET /api/airep/config, POST /api/airep/config (owner-only).
+- The receptionist worker reads its live config from KV key "config:live"
+  on EVERY call (getConfig merges over DEFAULT_CONFIG) and serves it at
+  GET /api/config; POST /api/config validates a patch and stores it.
+  Twilio fetches /voice fresh per inbound call, so a save changes the
+  greeting on the very next call — no redeploy.
+- RULE: never deploy with cf.py worker-put or the old deploy.py after
+  vars are set — only the fixed deploy.py (it re-sends existing
+  bindings; secrets persist independently).
+
+VERIFIED: Node harness (/tmp/airep-harness.mjs) 40/40 against the real
+receptionist worker + real router.js + real app.js — config API auth
+(403 without/wrong key), validation rejects (unknown field, non-https
+link, short greeting, booking-on with no link), KV round-trip, /voice
+TwiML carries the NEW greeting after a save, full simulated relay call
+proves the live business name + offers reach the LLM system prompt,
+toggle-off sim proves the prompt says booking/messages are off, proxy
+owner-only save (staff 403), proxy never leaks the worker key in any
+response, 503 with no RECEPTIONIST_KEY, static checks (tab/nav/v=13,
+zero occurrences of Rome's personal number in all served assets).
+Deployed v=13 with the fixed deploy.py scripts only; verified after
+deploy via the Cloudflare API that all bindings are still present on
+both workers (ripmode: RECEPTIONIST_KEY secret + RIPMODE_KV + 4 Twilio
+vars; receptionist: AI + RECEPTIONIST_KV + WORKER_KEY + NOTIFY_NUMBER +
+3 Twilio vars). Live: /ripmode 200, served app.js?v=13 and style.css?v=13
+byte-identical to local, /api/airep/status without a session → 401,
+receptionist /voice still serves the default SFB greeting (no live
+config has been saved yet), /api/config without a key → 403.
+NO NUMBER DIALED. No account touched.
