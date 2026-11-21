@@ -8,8 +8,11 @@
    Google Voice (Twilio SMS is a separate step, out of scope). Nothing here
    auto-plays a script or auto-sends an SMS. */
 const WORKER_API = "https://sfb-ripmode-router.2romanroyce8.workers.dev/api";
+// Prefix-aware (2026-11-21): the app serves at /ripmode AND /salesteam —
+// API calls stay on the prefix the page was loaded from. Sessions are
+// not bound to the path (same token works under both).
 const API_BASE = location.hostname.includes("sixfigureblueprints.com")
-  ? "/ripmode/api" : WORKER_API;
+  ? (location.pathname.startsWith("/salesteam") ? "/salesteam/api" : "/ripmode/api") : WORKER_API;
 const GV_NUMBER = "(213) 495-3536";
 /* Twilio Voice JS SDK 2.19.0 (pinned — do not use @latest). Verified live:
    https://cdn.jsdelivr.net/npm/@twilio/voice-sdk@2.19.0/dist/twilio.min.js
@@ -37,6 +40,9 @@ let state = null;         // shared state from KV: leads, callLogs, conversation
 let currentTab = "rip";
 let ripIndex = 0;
 let calEvent = null, calTime = null;
+let calLeadId = null;   // Calendar "Book for lead" picker: selected lead id (null = none picked yet; booking falls back to the first lead, as the old <select> did)
+let calLeadQuery = "";  // live search text for the lead picker; survives re-renders like phoneSearch
+let calFilter = "all";  // Calendar booked-meetings filter: "all" (Everyone) or "mine" (My calendar) — per-session, default Everyone
 const _calToday = new Date(); _calToday.setHours(0, 0, 0, 0);
 let calMonth = {y: _calToday.getFullYear(), m: _calToday.getMonth()}; // viewed month
 let calDate = new Date(_calToday); // selected day, defaults to today
@@ -163,13 +169,45 @@ function capsStripHtml() {
   if (!capsData) return `<div class="card caps-strip" id="caps-strip"><div class="section-title" style="margin-top:0">Daily limits</div><div class="notice">Loading today's limits…</div></div>`;
   return `<div class="card caps-strip" id="caps-strip"><div class="section-title" style="margin-top:0">Daily limits — resets midnight ET</div>${capsRowsHtml()}</div>`;
 }
+// Compact caps strip for RIP MODE (2026-11-21): the same 7 numbers as
+// capsRowsHtml (dials you/team, talk you/team, texts team-only, emails
+// you/team) in one slim 4-column grid + one short notes line — the 8-row
+// tall card is gone from this tab. The Analytics Daily Limits card keeps
+// the full capsRowsHtml form.
+function capsStripCompactHtml() {
+  if (!capsData) return `<div class="card caps-strip caps-strip-compact" id="caps-strip"><div class="section-title" style="margin-top:0">Daily limits</div><div class="notice">Loading today's limits…</div></div>`;
+  const t = capsTeam(), m = capsMine(), tl = capsLimits().team, ul = capsMyLimits();
+  const smsUsed = (t.sms === null || t.sms === undefined) ? "—" : String(t.sms);
+  const smsNum = (typeof t.sms === "number") ? t.sms : 0;
+  const talkCost = "$" + ((t.talkSec / 60) * OUTBOUND_COST_PER_MIN).toFixed(2);
+  const recep = (capsData && capsData.receptionistMinutes !== null && capsData.receptionistMinutes !== undefined)
+    ? "Receptionist today: " + capsData.receptionistMinutes + " min" : "Receptionist minutes: n/a";
+  const mini = (label, usedNum, limitNum, usedLabel, limitLabel) => {
+    const pct = limitNum > 0 ? Math.min(100, Math.round((usedNum / limitNum) * 100)) : 0;
+    const over = usedNum >= limitNum;
+    return `<div class="caps-mini"><span class="caps-mini-label">${esc(label)}</span><b>${esc(usedLabel)} / ${esc(limitLabel)}</b><span class="caps-mini-bar"><span class="${over ? "over" : ""}" style="width:${pct}%"></span></span></div>`;
+  };
+  return `<div class="card caps-strip caps-strip-compact" id="caps-strip">
+    <div class="section-title" style="margin-top:0">Daily limits — resets midnight ET</div>
+    <div class="caps-grid">
+      ${mini("Dials — you", m.dials, ul.dials, String(m.dials), String(ul.dials))}
+      ${mini("Dials — team", t.dials, tl.dials, String(t.dials), String(tl.dials))}
+      ${mini("Talk — you", m.talkSec / 60, ul.talkMin, capsTalkMin(m.talkSec) + " min", ul.talkMin + " min")}
+      ${mini("Talk — team", t.talkSec / 60, tl.talkMin, capsTalkMin(t.talkSec) + " min", tl.talkMin + " min")}
+      ${mini("Texts — team", smsNum, tl.sms, smsUsed, String(tl.sms))}
+      ${mini("Emails — you", m.emails, ul.emails, String(m.emails), String(ul.emails))}
+      ${mini("Emails — team", t.emails, tl.emails, String(t.emails), String(tl.emails))}
+    </div>
+    <p class="hint-line">Texts are team-only · Emails ${t.emails === 0 ? "0/" + tl.emails + " — Resend not wired" : t.emails + "/" + tl.emails} · Outbound talk ≈ ${talkCost} · ${esc(recep)} · Resets midnight ET.</p>
+  </div>`;
+}
 // In-place refresh of the RIP strip (no full re-render, so a live call's
 // DOM is never rebuilt under it). The Analytics card is refreshed by
 // render() when that tab loads; its form is never wiped mid-edit.
 function updateCapsDom() {
   const el = $("#caps-strip");
   if (el && capsData) {
-    try { el.outerHTML = capsStripHtml(); } catch (_) {}
+    try { el.outerHTML = (currentTab === "rip" ? capsStripCompactHtml() : capsStripHtml()); } catch (_) {}
   }
 }
 
@@ -235,6 +273,12 @@ function showDashboard() {
   const isOwner = role === "owner";
   $("#manage-users-link").classList.toggle("hidden", !isOwner);
   $("#create-workspace").classList.toggle("hidden", !isOwner);
+  const ws = document.querySelector("#account-popover .account-workspaces");
+  if (ws) ws.classList.toggle("hidden", !isOwner);
+  const ownerLinks = document.querySelector("#account-popover .account-links");
+  if (ownerLinks) ownerLinks.classList.toggle("hidden", !isOwner);
+  const staffBlock = $("#account-staff");
+  if (staffBlock) staffBlock.classList.toggle("hidden", isOwner);
   updateNav();
   checkTwilio(); // fire-and-forget: decides CALL (Twilio vs Google Voice fallback)
   loadCaps(); // fire-and-forget: today's team + per-person limits for the strip
@@ -265,7 +309,7 @@ async function doLogin() {
     err.className = "error"; return;
   }
   if (!ALLOWED_USERS.includes(username)) {
-    err.textContent = "That username is not on the team. Only romanroyce, loganwells and braylengarrett can sign in.";
+    err.textContent = "Wrong username or password";
     err.className = "error"; return;
   }
   if (!/^\d{4}$/.test(passcode)) { err.textContent = "Enter a 4-digit passcode."; err.className = "error"; return; }
@@ -290,7 +334,11 @@ async function doLogin() {
       await loadState(); showDashboard(); render();
     }
   } catch (e) {
-    err.textContent = e.message || "Sign-in failed.";
+    // Every failed sign-in shows one generic message (2026-11-21): it must
+    // never reveal whether the username exists or which half was wrong.
+    // The passcode-mismatch hint is the only exception — it is a local
+    // format check on the confirm field, not an auth result.
+    err.textContent = (e.message && e.message.indexOf("Passcodes do not match") === 0) ? e.message : "Wrong username or password";
     err.className = "error";
     // if account does not exist yet, show the confirm field so first sign-in can set a passcode
     try {
@@ -781,6 +829,10 @@ const TAB_META = {
   calllog: ["Call Log", "Every call, mirrored as a conversation. Tap a lead to open its chat thread."],
   airep: ["AI Rep", "See every call the AI receptionist takes — and change what callers hear on the next call."],
   analytics: ["Analytics", "Real numbers from the dialer and the receptionist — nothing invented."],
+  email: ["Email", "Send follow-ups from roman@sixfigureblueprintsllc.com — honest status, never claimed sent unless Resend accepted."],
+  assignments: ["Assignments", "Who's doing what, and by when."],
+  announcements: ["Announcements", "Team-wide notes from the owner."],
+  today: ["Today's Tasks", "Due today and overdue — yours first."],
   connections: ["Connections", "Honest status — nothing here is marked connected unless it was verified."],
 };
 function updateNav() {
@@ -802,6 +854,8 @@ function onNavigate(next) {
   updateNav();
   if (next === "airep") loadAiRep(); // loads status + calls + config, then re-renders
   if (next === "analytics") loadAnalytics(); // reloads state + receptionist calls, then re-renders
+  if (next === "email") loadEmailStatus(); // loads Resend connection state + fresh state, then re-renders
+  if (next === "assignments" || next === "announcements" || next === "today") { loadState().then(() => { if (currentTab === next) render(); }).catch(() => {}); }
   render();
 }
 function setMenuOpen(open) {
@@ -896,6 +950,10 @@ $("#create-workspace").addEventListener("click", () => {
   $("#account-popover").classList.add("hidden");
   showToast("Creating a new workspace is not part of the RIP MODE dialer.");
 });
+$("#staff-settings-btn").addEventListener("click", () => {
+  $("#account-popover").classList.add("hidden");
+  openStaffSettings();
+});
 
 function render() {
   if (!state) return;
@@ -912,6 +970,10 @@ function render() {
   else if (currentTab === "calllog") body = renderCallLog();
   else if (currentTab === "airep") body = renderAiRep();
   else if (currentTab === "analytics") body = renderAnalytics();
+  else if (currentTab === "email") body = renderEmail();
+  else if (currentTab === "assignments") body = renderAssignments();
+  else if (currentTab === "announcements") body = renderAnnouncements();
+  else if (currentTab === "today") body = renderToday();
   else if (currentTab === "connections") body = renderConnections();
   main.innerHTML = `<div class="page-heading"><div><span class="eyebrow">YOUR WORKSPACE</span><h1>${esc(meta[0])}</h1>${sub ? `<p>${esc(sub)}</p>` : ""}</div></div>` + body;
   bindTab();
@@ -927,13 +989,51 @@ function renderRip() {
   const last = calls[calls.length - 1];
   const s = state.sessionStats || {};
   const script = (state.scripts && state.scripts[0]) || {title: "Roofer pitch", body: "Hi, this is Roman from SFB Connect — we build AI receptionists for roofers that answer every call, book jobs, and follow up automatically. Got 60 seconds for me to show you what that looks like for your company?"};
+  // Dialer inside the iPhone frame (2026-11-21). Every control ID is the
+  // same as the old dialer card, so bindRip / syncCallUI keep working
+  // untouched. The business name is SMALL here — the lead card keeps the
+  // full details (dedupe: no full-size name heading in both cards).
+  const dialerInner = `
+      <div class="iphone-dialer">
+        <div class="lead-line"><b>${esc(lead.business)}</b> · <span style="color:#98989d;font-size:13px">Ready to dial</span></div>
+        <div class="mic-wrap">
+          <span class="pill" id="call-pill"><svg class="call-ico" viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M22 16.92v3a2 2 0 0 1-2.18 2 19.79 19.79 0 0 1-8.63-3.07 19.5 19.5 0 0 1-6-6 19.79 19.79 0 0 1-3.07-8.67A2 2 0 0 1 4.11 2h3a2 2 0 0 1 2 1.72c.127.96.361 1.903.7 2.81a2 2 0 0 1-.45 2.11L8.09 9.91a16 16 0 0 0 6 6l1.27-1.27a2 2 0 0 1 2.11-.45c.907.339 1.85.573 2.81.7A2 2 0 0 1 22 16.92z"/></svg><span id="call-state">${esc(callStateLabel(callState, callElapsed()))}</span></span>
+          <div class="mic-bar"><div class="mic-fill" id="mic-fill" style="width:${micLevel}%"></div></div>
+          <span class="pill" id="live-pill">${muted ? "MUTED" : "LIVE"}</span>
+        </div>
+        <div class="lead-line" style="font-size:26px;font-weight:800">${esc(lead.phone)}</div>
+        <div id="call-status-line" class="${callStatusLine() ? "notice" : "hidden"}" style="margin-top:6px">${esc(callStatusLine())}</div>
+        <div class="ready-row" style="margin-top:10px">
+          <button class="btn btn--primary" id="ready-btn" style="flex:1;padding:12px">READY</button>
+          <span class="pill on" id="ready-state">${readyOn ? "Ready" : "Not ready"}</span>
+        </div>
+        <div style="display:flex;gap:8px">
+          <button class="btn" id="mute-btn" style="flex:1">${muted ? "UNMUTE" : "MUTE"}</button>
+          <button class="btn" id="keypad-btn" style="flex:1">KEYPAD</button>
+        </div>
+        <div style="display:flex;gap:8px;margin-top:8px">
+          <button class="btn" id="script-btn" style="flex:1">SCRIPT</button>
+          <button class="btn" id="dropvm-btn" style="flex:1">DROP VM</button>
+        </div>
+        <div id="script-box" class="hidden" style="margin-top:10px">
+          <div class="field"><label>${esc(script.title)}</label>
+          <textarea class="input" readonly rows="5">${esc(script.body)}</textarea></div>
+          <p class="notice">Read it yourself on the call — the script is not played automatically.</p>
+        </div>
+        <div id="keypad-box" class="hidden" style="margin-top:10px">
+          <div class="slots">${["1","2","3","4","5","6","7","8","9","*","0","#"].map((k) => `<button class="slot" data-key="${k}">${k}</button>`).join("")}</div>
+        </div>
+        <button class="big-call${callState !== "idle" ? " end" : ""}" id="call-btn" ${callState === "idle" && capsBlockedReason() ? "disabled" : ""}>${callState !== "idle" ? "END CALL" : "CALL"}</button>
+        <div id="caps-block-note" class="${capsBlockedReason() ? "error" : "hidden"}" style="margin-top:8px">${esc(capsBlockedReason())}</div>
+        <button class="btn" id="text-btn" style="width:100%;margin-top:8px;padding:13px">TEXT</button>
+      </div>`;
   return `
-  ${capsStripHtml()}
-  <div class="grid2">
-    <div class="card">
+  ${capsStripCompactHtml()}
+  <div class="grid2 rip-grid">
+    <div class="card rip-compact">
       <div class="lead-line">
         <span class="badge">#${ripIndex + 1} / ${leads.length}</span>
-        <div style="margin-top:10px"><b>${esc(lead.business)}</b></div>
+        <div style="margin-top:8px" class="rip-lead-name">${esc(lead.business)}</div>
         <div>${esc(lead.niche || "Roofing")}</div>
         <div>Owner: ${esc(lead.owner || "no name on file")}</div>
         <div>Phone: ${esc(lead.phone)}</div>
@@ -946,74 +1046,40 @@ function renderRip() {
       <div class="section-title">Last Call</div>
       <div class="notice">First call — no call history yet.</div>`}
       <div class="section-title">Session Data</div>
-      <div class="stat-boxes">
-        <div class="stat-box"><div class="num">${s.dials || 0}</div><div class="lbl">Dials</div></div>
-        <div class="stat-box"><div class="num">${s.connected || 0}</div><div class="lbl">Connected</div></div>
-        <div class="stat-box"><div class="num">${s.noAnswer || 0}</div><div class="lbl">No Answer</div></div>
-        <div class="stat-box"><div class="num">${s.voicemail || 0}</div><div class="lbl">Voicemail</div></div>
-        <div class="stat-box"><div class="num">${s.meetings || 0}</div><div class="lbl">Meetings Booked</div></div>
-        <div class="stat-box"><div class="num">${s.perHour || 0}</div><div class="lbl">Per Hour</div></div>
+      <div class="stat-strip">
+        <div class="stat-cell"><div class="num">${s.dials || 0}</div><div class="lbl">Dials</div></div>
+        <div class="stat-cell"><div class="num">${s.connected || 0}</div><div class="lbl">Connected</div></div>
+        <div class="stat-cell"><div class="num">${s.noAnswer || 0}</div><div class="lbl">No Answer</div></div>
+        <div class="stat-cell"><div class="num">${s.voicemail || 0}</div><div class="lbl">Voicemail</div></div>
+        <div class="stat-cell"><div class="num">${s.meetings || 0}</div><div class="lbl">Meetings</div></div>
+        <div class="stat-cell"><div class="num">${s.perHour || 0}</div><div class="lbl">Per Hour</div></div>
       </div>
-      <div class="section-title">No Contact</div>
+      <div class="section-title">Outcomes</div>
       <div class="dispo-row">
         <button class="btn" data-dispo="no_answer">No Answer</button>
         <button class="btn" data-dispo="voicemail">Voicemail</button>
-      </div>
-      <div class="section-title">Conversation</div>
-      <div class="dispo-row">
         <button class="btn" data-dispo="not_interested">Not Interested</button>
         <button class="btn" data-dispo="callback">Callback</button>
         <button class="btn" data-dispo="receptionist">Receptionist</button>
         <button class="btn" data-dispo="send_vsl">Send VSL</button>
       </div>
-      <div class="section-title">Result</div>
-      <button class="btn btn-green" id="book-meeting-btn" style="width:100%;padding:14px;font-size:16px">MEETING BOOKED — CONFIRM + EMAIL + SMS</button>
-      <p class="notice">Confirm books the meeting and queues the follow-ups. Email sends once Resend is wired. SMS opens Google Voice with a confirmation text ready for you to send — it is not sent automatically.</p>
-      <div style="display:flex;gap:8px;margin-top:14px">
+      <button class="btn btn-green" id="book-meeting-btn" style="width:100%;padding:14px;font-size:16px;margin-top:10px">MEETING BOOKED — CONFIRM + EMAIL + SMS</button>
+      <p class="hint-line">Confirm books the meeting; email queued (Resend pending), SMS via Google Voice.</p>
+      <div style="display:flex;gap:8px;margin-top:12px">
         <button class="btn" id="prev-lead" ${ripIndex === 0 ? "disabled" : ""}>← Prev lead</button>
         <button class="btn" id="next-lead" ${ripIndex >= leads.length - 1 ? "disabled" : ""}>Next lead →</button>
       </div>
     </div>
-    <div class="card">
-      <div class="lead-line"><b>${esc(lead.business)}</b></div>
-      <div class="mic-wrap">
-        <span class="pill" id="call-pill"><svg class="call-ico" viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M22 16.92v3a2 2 0 0 1-2.18 2 19.79 19.79 0 0 1-8.63-3.07 19.5 19.5 0 0 1-6-6 19.79 19.79 0 0 1-3.07-8.67A2 2 0 0 1 4.11 2h3a2 2 0 0 1 2 1.72c.127.96.361 1.903.7 2.81a2 2 0 0 1-.45 2.11L8.09 9.91a16 16 0 0 0 6 6l1.27-1.27a2 2 0 0 1 2.11-.45c.907.339 1.85.573 2.81.7A2 2 0 0 1 22 16.92z"/></svg><span id="call-state">${esc(callStateLabel(callState, callElapsed()))}</span></span>
-        <div class="mic-bar"><div class="mic-fill" id="mic-fill" style="width:${micLevel}%"></div></div>
-        <span class="pill" id="live-pill">${muted ? "MUTED" : "LIVE"}</span>
-      </div>
-      <div class="lead-line" style="font-size:20px;font-weight:700">${esc(lead.phone)}</div>
-      <div id="call-status-line" class="${callStatusLine() ? "notice" : "hidden"}" style="margin-top:10px">${esc(callStatusLine())}</div>
-      <div class="ready-row" style="margin-top:12px">
-        <button class="btn btn--primary" id="ready-btn" style="flex:1;padding:12px">READY</button>
-        <span class="pill on" id="ready-state">${readyOn ? "Ready" : "Not ready"}</span>
-      </div>
-      <div style="display:flex;gap:8px">
-        <button class="btn" id="mute-btn" style="flex:1">${muted ? "UNMUTE" : "MUTE"}</button>
-        <button class="btn" id="keypad-btn" style="flex:1">KEYPAD</button>
-      </div>
-      <div style="display:flex;gap:8px;margin-top:8px">
-        <button class="btn" id="script-btn" style="flex:1">SCRIPT</button>
-        <button class="btn" id="dropvm-btn" style="flex:1">DROP VM</button>
-      </div>
-      <div id="script-box" class="hidden" style="margin-top:10px">
-        <div class="field"><label>${esc(script.title)}</label>
-        <textarea class="input" readonly rows="5">${esc(script.body)}</textarea></div>
-        <p class="notice">Read it yourself on the call — the script is not played automatically.</p>
-      </div>
-      <div id="keypad-box" class="hidden" style="margin-top:10px">
-        <div class="slots">${["1","2","3","4","5","6","7","8","9","*","0","#"].map((k) => `<button class="slot" data-key="${k}">${k}</button>`).join("")}</div>
-      </div>
-      <button class="big-call${callState !== "idle" ? " end" : ""}" id="call-btn" ${callState === "idle" && capsBlockedReason() ? "disabled" : ""}>${callState !== "idle" ? "END CALL" : "CALL"}</button>
-      <div id="caps-block-note" class="${capsBlockedReason() ? "error" : "hidden"}" style="margin-top:8px">${esc(capsBlockedReason())}</div>
-      <button class="btn" id="text-btn" style="width:100%;margin-top:8px;padding:13px">TEXT</button>
+    <div>
+      ${iphoneChrome(dialerInner, {compact: true, label: "iPhone showing the dialer"})}
       ${isOwner ? `
-      <div style="margin-top:14px;border-top:1px solid var(--line);padding-top:12px">
-        <div class="section-title">Test call — owner only</div>
+      <div class="card" style="margin-top:12px">
+        <div class="section-title" style="margin-top:0">Test call — owner only</div>
         <div style="display:flex;gap:8px">
           <input class="input" id="test-number" type="tel" inputmode="tel" autocomplete="off" placeholder="Enter a number to test-call" value="${esc(testNumberDraft)}" style="flex:1;min-width:0">
           <button class="btn" id="test-call-btn">${callState !== "idle" && isTestCall ? "END CALL" : "CALL"}</button>
         </div>
-        <p class="notice">Dials through Twilio from +1 239 349 9491, exactly like a lead call. The number is never saved — not to leads, the Call Log, or anywhere else.</p>
+        <p class="hint-line">Same Twilio path from +1 239 349 9491. Number never saved.</p>
       </div>` : ""}
     </div>
   </div>`;
@@ -1035,10 +1101,27 @@ function bindRip() {
   });
   const bookBtn = $("#book-meeting-btn");
   if (bookBtn) bookBtn.onclick = async () => {
-    const r = await mutate("bookMeeting", {leadId: lead.id});
-    const m = (state.meetings || []).find((x) => x.leadId === lead.id);
+    await mutate("bookMeeting", {leadId: lead.id});
+    const mtgs = (state.meetings || []).filter((x) => x.leadId === lead.id);
+    const m = mtgs[mtgs.length - 1];
+    const when = m ? (m.date + (m.time ? " " + m.time : "")) : "";
+    let emailNote;
+    if (!lead.email) {
+      emailNote = "No email on file for this lead — confirmation email skipped.";
+    } else {
+      const e1 = EMAIL_TEMPLATES.find((t) => t.id === "e1");
+      const merged = mergeEmailTemplate(e1, lead, when);
+      try {
+        await mutate("sendEmail", {leadId: lead.id, to: lead.email, subject: merged.subject, body: merged.body});
+        emailNote = "Confirmation email sent to " + lead.email + ".";
+      } catch (e2) {
+        try { await loadState(); } catch (_) {}
+        emailNote = "Email not sent — " + (e2.message || "try again.");
+        render();
+      }
+    }
     const text = `Hi, this is Roman from SFB Connect — confirming our meeting. Here is the booking link if you need it: ${CAL_LINK}`;
-    showToast("Meeting booked for " + lead.business + ". Email is queued (Resend pending). SMS: Google Voice will open with this text ready to send:\n\n" + text);
+    showToast("Meeting booked for " + lead.business + ". " + emailNote + " SMS: Google Voice will open with this text ready to send:\n\n" + text);
     openGoogleVoice("text", lead);
   };
   const readyBtn = $("#ready-btn");
@@ -1269,20 +1352,101 @@ function bindPipeline() {
    Real data only: Rome's 5 verified Cal.com event types,
    America/New_York, no price (his bookings are free). The grid shows
    the CURRENT month; today is the default selected date. */
+/* Event types (2026-11-21): exactly the six Rome named, in his order.
+   Four are real Cal.com event types (verified live 2026-11-21 via the
+   Cal.com API): 15 min (7747432), 30 min (7747431), Secret (7747430),
+   Discovery (7747663). "1 hr" (8013117) and "Client Call" (8013118)
+   were CREATED on Cal.com the same day via the API, mirroring the
+   30-min type (video call). "Bingled — Website Strategy Call" is gone
+   from this picker (the Cal.com type still exists, untouched).
+   Lengths are the Cal.com API truth: Secret is 15 min and Discovery
+   is 60 min on Cal.com (the old picker said 30 for both). */
 const CAL_TYPES = [
-  {id: "15min", name: "15 min meeting", desc: "15 minutes · Video call", mins: 15},
-  {id: "30min", name: "30 min meeting", desc: "30 minutes · Video call", mins: 30},
-  {id: "secret", name: "Secret meeting", desc: "Private · Video call", mins: 30},
-  {id: "sfb-discovery-call", name: "Six Figure Blueprints — Discovery Call", desc: "Discovery · Video call", mins: 30},
-  {id: "bingled-website-strategy", name: "Bingled — Website Strategy Call", desc: "Website strategy · Video call", mins: 30},
+  {id: "15min", name: "15 min", desc: "15 minutes · Video call", mins: 15, link: "https://cal.com/roman-royce/15min"},
+  {id: "30min", name: "30 min", desc: "30 minutes · Video call", mins: 30, link: "https://cal.com/roman-royce/30min"},
+  {id: "1hr", name: "1 hr", desc: "60 minutes · Video call", mins: 60, link: "https://cal.com/roman-royce/1hr"},
+  {id: "discovery", name: "Discovery Call", desc: "Discovery · Video call", mins: 60, link: "https://cal.com/roman-royce/sfb-discovery-call"},
+  {id: "secret", name: "Secret Meeting", desc: "Private · Video call", mins: 15, link: "https://cal.com/roman-royce/secret"},
+  {id: "client-call", name: "Client Call", desc: "Closing deals, updates, check-ins · Video call", mins: 30, link: "https://cal.com/roman-royce/client-call"},
 ];
 const SLOT_TIMES = ["9:00 AM","9:30 AM","10:00 AM","10:30 AM","11:00 AM","11:30 AM","1:00 PM","1:30 PM","2:00 PM","2:30 PM","3:00 PM","3:30 PM","4:00 PM","4:30 PM"];
 const CAL_TZONES = ["America/New_York", "America/Chicago", "America/Denver", "America/Los_Angeles", "America/Phoenix"];
 function _calSameDay(a, b) { return !!(a && b && a.getFullYear() === b.getFullYear() && a.getMonth() === b.getMonth() && a.getDate() === b.getDate()); }
 function _calKey(d) { return d.getFullYear() + "-" + (d.getMonth() + 1) + "-" + d.getDate(); }
+/* Searchable lead picker (2026-11-21): shared by the Calendar "Book for
+   lead" picker and the Email compose picker. Pure helpers + one binder.
+   Search matches business, city, owner, phone (digits or formatted) and
+   email, case-insensitive. The list opens upward (the .calbook card has
+   overflow:hidden, so a downward list would clip). Keyboard: arrows move,
+   Enter selects, Escape closes and restores the selected lead. */
+let _pickerOutsideBound = false;
+function _leadSearchText(l) {
+  return [l.business, l.city, l.owner, l.phone, String(l.phone || "").replace(/\D/g, ""), l.email || ""].join(" ").toLowerCase();
+}
+function _leadMatches(l, q) {
+  q = String(q || "").trim().toLowerCase();
+  return !q || _leadSearchText(l).includes(q);
+}
+function leadPickerItems(leads, q, selectedId) {
+  const hits = (leads || []).filter((l) => _leadMatches(l, q));
+  if (!hits.length) return `<div class="lead-picker-empty">No leads match</div>`;
+  return hits.map((l) => `<button type="button" class="lead-picker-item" role="option" data-pick-lead="${l.id}" aria-selected="${l.id === selectedId}"><span><b>${esc(l.business)}</b>${l.city ? " · " + esc(l.city) : ""}</span><span class="lp-meta">${esc(l.phone || "")}${l.id === selectedId ? " ✓" : ""}</span></button>`).join("");
+}
+function bindLeadPicker(cfg) {
+  const input = $("#" + cfg.inputId), list = $("#" + cfg.listId), clear = $("#" + cfg.clearId);
+  if (!input || !list) return;
+  let hl = -1;
+  const show = () => {
+    list.innerHTML = leadPickerItems(state.leads, cfg.getQuery(), cfg.getSelectedId());
+    list.querySelectorAll(".lead-picker-item").forEach((el) => { el.onclick = () => pick(el.dataset.pickLead); });
+    list.classList.remove("hidden"); input.setAttribute("aria-expanded", "true");
+  };
+  const hide = () => { list.classList.add("hidden"); input.setAttribute("aria-expanded", "false"); };
+  const visibleItems = () => Array.prototype.slice.call(list.querySelectorAll(".lead-picker-item"));
+  const setHl = (i) => {
+    const items = visibleItems();
+    hl = items.length ? ((i % items.length) + items.length) % items.length : -1;
+    items.forEach((el, j) => el.classList.toggle("hl", j === hl));
+  };
+  const pick = (id) => {
+    const lead = (state.leads || []).find((l) => l.id === id);
+    if (!lead) return;
+    cfg.setSelectedId(id); cfg.setQuery(lead.business);
+    input.value = lead.business; hide();
+    if (clear) clear.style.display = "block";
+    if (cfg.onPick) cfg.onPick(lead);
+  };
+  input.addEventListener("input", () => { cfg.setQuery(input.value); hl = -1; show(); if (clear) clear.style.display = input.value ? "block" : "none"; });
+  input.addEventListener("focus", () => show());
+  input.addEventListener("keydown", (e) => {
+    if (e.key === "ArrowDown") { e.preventDefault(); show(); setHl(hl + 1); }
+    else if (e.key === "ArrowUp") { e.preventDefault(); show(); setHl(hl - 1); }
+    else if (e.key === "Enter") { e.preventDefault(); const items = visibleItems(); const el = items[hl >= 0 ? hl : 0]; if (el) pick(el.dataset.pickLead); }
+    else if (e.key === "Escape") { e.preventDefault(); hide(); const sel = (state.leads || []).find((l) => l.id === cfg.getSelectedId()) || (state.leads || [])[0] || null; input.value = sel ? sel.business : ""; cfg.setQuery(input.value); if (clear) clear.style.display = input.value ? "block" : "none"; }
+  });
+  if (clear) clear.addEventListener("click", () => { input.value = ""; cfg.setQuery(""); cfg.setSelectedId(null); if (cfg.onPick) cfg.onPick(null); hl = -1; show(); input.focus(); });
+  if (!_pickerOutsideBound) {
+    _pickerOutsideBound = true;
+    document.addEventListener("pointerdown", (e) => {
+      document.querySelectorAll(".lead-picker-list").forEach((el) => {
+        if (el.classList.contains("hidden")) return;
+        let n = e.target, inside = false;
+        while (n) { if (n.classList && n.classList.contains("lead-picker-wrap")) { inside = true; break; } n = n.parentNode; }
+        if (!inside) el.classList.add("hidden");
+      });
+    });
+  }
+  list.innerHTML = leadPickerItems(state.leads, cfg.getQuery(), cfg.getSelectedId());
+  list.querySelectorAll(".lead-picker-item").forEach((el) => { el.onclick = () => pick(el.dataset.pickLead); });
+}
 function renderCalendar() {
   const type = CAL_TYPES.find((t) => t.id === calEvent) || CAL_TYPES[1];
   const meetings = state.meetings || [];
+  // Mine/Everyone filter (2026-11-21): "mine" = booked by the signed-in
+  // user (the server stores by: username on every bookMeeting). Default
+  // Everyone. Per-session only — it never changes stored data.
+  const shownMeetings = calFilter === "mine" ? meetings.filter((m) => m.by === me) : meetings;
+  const bookedDays = new Set(shownMeetings.map((m) => { const d = parseStoredDate(m.date, null); return d ? _calKey(d) : ""; }).filter(Boolean));
   const {y, m} = calMonth;
   const first = new Date(y, m, 1);
   const startOffset = first.getDay(); // Sunday = 0
@@ -1296,6 +1460,8 @@ function renderCalendar() {
   const monthLabel = first.toLocaleDateString("en-US", {month: "long"});
   const yearLabel = String(y);
   const selLabel = calDate ? calDate.toLocaleDateString("en-US", {weekday: "long", month: "long", day: "numeric"}) : "Pick a day";
+  const selLead = (state.leads || []).find((l) => l.id === calLeadId) || (state.leads || [])[0] || null;
+  const leadInputValue = calLeadQuery || (selLead ? selLead.business : "");
   return `
   <div class="calbook">
     <div class="calbook-side">
@@ -1312,11 +1478,16 @@ function renderCalendar() {
       </div>
       <div class="card" style="margin-top:18px">
         <div class="section-title" style="margin-top:0">Booked meetings</div>
-        ${meetings.length ? meetings.map((m) => {
+        <div class="seg-toggle" role="group" aria-label="Calendar filter" style="margin-bottom:10px">
+          <button type="button" data-calfilter="mine" aria-pressed="${calFilter === "mine"}">My calendar</button>
+          <button type="button" data-calfilter="all" aria-pressed="${calFilter === "all"}">Everyone</button>
+        </div>
+        ${shownMeetings.length ? shownMeetings.map((m) => {
           const l = leadById(m.leadId);
           // Deleted lead: show the name stored on the meeting itself.
           return `<div class="kv"><span>${esc(m.leadName || (l ? l.business : "Meeting"))}<br><span style="color:var(--muted);font-size:12px">${esc(m.date)} · ${esc(m.time)} · ${esc(m.typeName || "")}</span></span><span class="badge green">Booked</span></div>`;
-        }).join("") : `<div class="notice">No meetings booked yet.</div>`}
+        }).join("") : `<div class="notice">${meetings.length ? "Nothing on your calendar in this view." : "No meetings booked yet."}</div>`}
+        ${calFilter === "mine" && meetings.length ? `<p class="notice">Showing ${shownMeetings.length} of ${meetings.length} booked meetings.</p>` : ""}
       </div>
     </div>
     <div class="calbook-main">
@@ -1327,21 +1498,32 @@ function renderCalendar() {
           <button type="button" data-calmonth="next" aria-label="Next month">›</button>
         </div>
       </div>
-      <div class="calbook-weekdays">${["SUN", "MON", "TUE", "WED", "THU", "FRI", "SAT"].map((d) => `<span>${d}</span>`).join("")}</div>
-      <div class="calbook-grid">${cells.map(({d, outside}) => {
-        const past = d < _calToday;
-        const sel = _calSameDay(d, calDate);
-        const isToday = _calSameDay(d, _calToday);
-        const nextLabel = outside && d.getDate() === 1 ? `<span class="calday-nextlabel">${esc(d.toLocaleDateString("en-US", {month: "short"}).toUpperCase())}</span>` : "";
-        return `<button type="button" class="calday ${sel ? "calday--sel" : ""} ${isToday ? "calday--today" : ""} ${outside ? "calday--outside" : ""}" data-caldate="${_calKey(d)}" ${outside || past ? "disabled" : ""}>${nextLabel}<span class="calday-num">${d.getDate()}</span><span class="calday-dot"></span></button>`;
-      }).join("")}</div>
-      <div class="calbook-slots">
-        <div class="calbook-slots-head">${esc(selLabel)}</div>
-        <div class="slots">${SLOT_TIMES.map((t) => `<button type="button" class="slot ${calTime === t ? "sel" : ""}" data-caltime="${t}">${t}</button>`).join("")}</div>
+      <div class="calbook-body">
+        <div style="flex:1;min-width:0">
+          <div class="calbook-weekdays">${["SUN", "MON", "TUE", "WED", "THU", "FRI", "SAT"].map((d) => `<span>${d}</span>`).join("")}</div>
+          <div class="calbook-grid${calDate ? " calbook-grid--has-sel" : ""}">${cells.map(({d, outside}) => {
+            const past = d < _calToday;
+            const sel = _calSameDay(d, calDate);
+            const isToday = _calSameDay(d, _calToday);
+            const booked = bookedDays.has(_calKey(d));
+            const nextLabel = outside && d.getDate() === 1 ? `<span class="calday-nextlabel">${esc(d.toLocaleDateString("en-US", {month: "short"}).toUpperCase())}</span>` : "";
+            return `<button type="button" class="calday ${sel ? "calday--sel" : ""} ${isToday ? "calday--today" : ""} ${outside ? "calday--outside" : ""} ${booked ? "calday--booked" : ""}" data-caldate="${_calKey(d)}" ${outside || past ? "disabled" : ""}>${nextLabel}<span class="calday-num">${d.getDate()}</span><span class="calday-dot"></span></button>`;
+          }).join("")}</div>
+        </div>
+        <div class="calbook-times">
+          <div class="calbook-slots-head">${esc(selLabel)}</div>
+          <div class="slots">${SLOT_TIMES.map((t) => `<button type="button" class="slot ${calTime === t ? "sel" : ""}" data-caltime="${t}">${t}</button>`).join("")}</div>
+        </div>
       </div>
       <div class="grid2">
         <div class="field"><label>Book for lead</label>
-          <select class="select" id="cal-lead">${(state.leads || []).map((l) => `<option value="${l.id}">${esc(l.business)}</option>`).join("")}</select></div>
+          <div class="lead-picker-wrap">
+            <input class="input" id="cal-lead-input" type="text" placeholder="Search leads…" value="${esc(leadInputValue)}" autocomplete="off" role="combobox" aria-expanded="false" aria-controls="cal-lead-list">
+            <button type="button" class="lead-picker-clear" id="cal-lead-clear" aria-label="Clear lead search" style="display:${calLeadQuery ? "block" : "none"}">×</button>
+            <div class="lead-picker-list hidden" id="cal-lead-list" role="listbox"></div>
+          </div>
+          <div class="notice" id="cal-lead-selected">${selLead ? "Booking for: <b>" + esc(selLead.business) + "</b>" : "No lead selected"}</div>
+        </div>
         <div class="field"><label>Your name</label><input class="input" id="cal-name" type="text" value="Roman Royce"></div>
       </div>
       <div style="display:flex;gap:8px;flex-wrap:wrap">
@@ -1353,6 +1535,7 @@ function renderCalendar() {
     </div>
   </div>`;
 }
+
 function bindCalendar() {
   document.querySelectorAll("[data-caltype]").forEach((el) => el.onclick = () => { calEvent = el.dataset.caltype; render(); });
   document.querySelectorAll("[data-caldate]").forEach((el) => el.onclick = () => {
@@ -1368,16 +1551,23 @@ function bindCalendar() {
   const tz = $("#cal-tz");
   if (tz) tz.onchange = () => { calTz = tz.value; render(); };
   const open = $("#cal-open");
-  if (open) open.onclick = () => window.open(CAL_LINK, "_blank");
+  if (open) open.onclick = () => { const t = CAL_TYPES.find((x) => x.id === calEvent) || CAL_TYPES[1]; window.open(t.link, "_blank"); };
   const confirm = $("#cal-confirm");
   if (confirm) confirm.onclick = async () => {
     if (!calDate || !calTime) { showToast("Pick a day and a time first."); return; }
     const type = CAL_TYPES.find((t) => t.id === (calEvent || "30min")) || CAL_TYPES[1];
     const date = calDate.toLocaleDateString("en-US", {weekday: "long", month: "long", day: "numeric"});
-    const leadId = $("#cal-lead") ? $("#cal-lead").value : (state.leads[0] || {}).id;
+    const leadId = calLeadId || (state.leads[0] || {}).id;
     await mutate("bookMeeting", {leadId, date, time: calTime, typeName: type.name});
     showToast("Meeting booked: " + date + " at " + calTime + " (" + type.name + "). Email is queued (Resend pending) — confirm on Cal.com if you want the live invite sent.");
   };
+  document.querySelectorAll("[data-calfilter]").forEach((el) => el.onclick = () => { calFilter = el.dataset.calfilter; render(); });
+  bindLeadPicker({
+    inputId: "cal-lead-input", listId: "cal-lead-list", clearId: "cal-lead-clear",
+    getQuery: () => calLeadQuery, setQuery: (v) => { calLeadQuery = v; },
+    getSelectedId: () => calLeadId, setSelectedId: (v) => { calLeadId = v; },
+    onPick: (lead) => { const lab = $("#cal-lead-selected"); if (lab) lab.innerHTML = lead ? "Booking for: <b>" + esc(lead.business) + "</b>" : "No lead selected"; },
+  });
 }
 
 /* ---------- CALL LOG + CONVERSATIONS ----------
@@ -1390,10 +1580,12 @@ function bindCalendar() {
    or latest call type + outcome), sorted most recent first, with an iOS
    search bar on top that filters live by name / phone / message / call.
    All data is real: calls/messages come from state, nothing invented. */
-function iphoneChrome(inner) {
+function iphoneChrome(inner, opts) {
+  const compact = !!(opts && opts.compact);
+  const label = (opts && opts.label) || "iPhone showing the Call Log";
   return `
   <div class="iphone-wrap">
-    <div class="iphone" role="img" aria-label="iPhone showing the Call Log">
+    <div class="iphone${compact ? " iphone--compact" : ""}" role="img" aria-label="${label}">
       <span class="iphone-side iphone-side-l1"></span>
       <span class="iphone-side iphone-side-l2"></span>
       <span class="iphone-side iphone-side-r"></span>
@@ -1422,32 +1614,26 @@ function latestActivityFor(leadId) {
   if (lastCall) return {kind: "call", call: lastCall, at: callStamp};
   return null;
 }
+/* ---------- iPad frame — Call Log (2026-11-21) ----------
+   The Call Log tab renders inside a CSS mock iPad: wider proportions,
+   small camera dot in the top bezel, no Dynamic Island, slim status bar.
+   Inside it runs Messages in the real iPad layout: conversation list on
+   the LEFT, open thread on the RIGHT, side by side in the same frame. */
+function ipadChrome(inner) {
+  return `
+  <div class="ipad-wrap">
+    <div class="ipad" role="img" aria-label="iPad showing the Call Log">
+      <div class="ipad-cam"></div>
+      <div class="ipad-screen">
+        <div class="ipad-status"><span>9:41</span><span class="iphone-status-icons"><svg width="17" height="11" viewBox="0 0 17 11" fill="#fff"><rect x="0" y="7" width="3" height="4" rx="1"/><rect x="4.5" y="5" width="3" height="6" rx="1"/><rect x="9" y="2.5" width="3" height="8.5" rx="1"/><rect x="13.5" y="0" width="3" height="11" rx="1"/></svg><svg width="16" height="11" viewBox="0 0 16 12" fill="#fff"><path d="M8 10.8a1.4 1.4 0 1 0 0-2.8 1.4 1.4 0 0 0 0 2.8zM8 6.2c1.2 0 2.3.5 3.1 1.3l-1.5 1.5A2.4 2.4 0 0 0 8 8.4c-.7 0-1.3.2-1.7.6L4.9 7.5A4.6 4.6 0 0 1 8 6.2zM8 2c2.4 0 4.6 1 6.2 2.5L12.7 6A6.4 6.4 0 0 0 8 4.2c-1.7 0-3.3.7-4.5 1.8L2 4.5A8.6 8.6 0 0 1 8 2z"/></svg><svg width="25" height="12" viewBox="0 0 25 12" fill="none"><rect x="0.5" y="0.5" width="21" height="11" rx="3.5" stroke="#fff" opacity="0.4"/><rect x="2" y="2" width="16" height="8" rx="2" fill="#fff"/><path d="M23.5 4v4a2 2 0 0 0 0-4z" fill="#fff" opacity="0.4"/></svg></span></div>
+        ${inner}
+        <div class="ipad-home"></div>
+      </div>
+    </div>
+  </div>`;
+}
 function renderCallLog() {
   const leads = state.leads || [];
-  if (activeConv) {
-    const lead = leadById(activeConv);
-    const conv = convFor(activeConv) || {messages: []};
-    const calls = callsFor(activeConv);
-    // Deleted lead: the thread stays readable under the name stored on
-    // its history (delete safeguard, 2026-11-21) — never blank.
-    const displayName = lead ? lead.business : leadNameFor(activeConv);
-    return iphoneChrome(`
-      <div class="iphone-thread-head">
-        <button class="iphone-back" id="back-convs" type="button" aria-label="Back to all conversations">‹</button>
-        <span class="im-avatar iphone-head-avatar">${esc(initialsFor(displayName))}</span>
-        <span class="iphone-head-name"><b>${esc(displayName)}</b><span>${esc(lead ? lead.phone : "")} · ${calls.length} call${calls.length === 1 ? "" : "s"} logged</span></span>
-      </div>
-      <div class="iphone-body"><div class="chat-thread iphone-thread">
-        ${calls.map((c) => `<div class="im-sys">Call — ${esc(callLabel(c.outcome))} · ${esc(c.date)} · ${esc(c.time)}</div>`).join("")}
-        ${(conv.messages || []).map((m) => `${(m.date || m.time) ? `<div class="im-stamp">${esc(m.date || "")}${m.date && m.time ? " · " : ""}${esc(m.time || "")}</div>` : ""}<div class="msg ${m.from === "me" ? "out" : "in"}">${esc(m.text)}</div>`).join("") || ""}
-        ${!calls.length && !(conv.messages || []).length ? `<div class="notice iphone-empty">No calls or messages yet for this lead.</div>` : ""}
-      </div></div>
-      <div class="chat-input iphone-input">
-        <input class="input" id="chat-input" type="text" placeholder="iMessage">
-        <button class="chat-send" id="chat-send" type="button" aria-label="Send">↑</button>
-      </div>
-      <p class="notice iphone-note">Messages you type here are saved to this lead's thread. Outbound texts go through Google Voice — use the TEXT button in RIP MODE to send them.</p>`);
-  }
   const searchBar = `
     <div class="iphone-search">
       <svg width="15" height="15" viewBox="0 0 15 15" fill="none" aria-hidden="true"><circle cx="6.5" cy="6.5" r="5" stroke="#8e8e93" stroke-width="1.6"/><path d="M10.5 10.5L14 14" stroke="#8e8e93" stroke-width="1.6" stroke-linecap="round"/></svg>
@@ -1464,8 +1650,14 @@ function renderCallLog() {
   const orphanLeads = orphanIds.map((id) => ({id, business: leadNameFor(id), phone: "", stage: "Deleted"}));
   const rows = [...leads, ...orphanLeads].map((l) => ({lead: l, act: latestActivityFor(l.id)}))
     .sort((a, b) => (b.act ? b.act.at : 0) - (a.act ? a.act.at : 0));
+  const isTeam = !activeConv || activeConv === "__team__";
   const list = `
-      <div class="conv-list">${rows.map(({lead: l, act}) => {
+      <div class="ipad-list-body"><div class="conv-list">
+      <button class="conv-item team-pin" data-openconv="__team__">
+        <span class="im-avatar">SFB</span>
+        <span class="im-conv-main"><span class="pin-label">Pinned</span><b>SFB SALES TEAM</b><span class="im-preview">Group chat — Roman, Logan, Braylen</span></span>
+        <span class="im-conv-right"></span></button>
+      ${rows.map(({lead: l, act}) => {
         const missed = act && act.kind === "call" && isMissedCall(act.call);
         const preview = !act ? "No calls or messages yet"
           : act.kind === "msg" ? act.msg.text.slice(0, 60)
@@ -1478,32 +1670,82 @@ function renderCallLog() {
           <span class="im-avatar">${esc(initialsFor(l.business))}</span>
           <span class="im-conv-main"><b>${esc(l.business)}</b><span class="im-preview${missed ? " missed" : ""}">${esc(preview)}</span></span>
           <span class="im-conv-right">${at ? `<span class="im-time">${esc(at)}</span>` : ""}${(l.stage || "New") === "New" ? `<span class="im-unread" title="New lead"></span>` : ""}</span></button>`;
-      }).join("")}</div>
-      <div class="notice iphone-empty iphone-noresults" style="display:none">No results. Try a different search.</div>`;
-  return iphoneChrome(`
-      <div class="iphone-title">Messages</div>
-      ${searchBar}
-      <div class="iphone-body">${list}</div>`);
+      }).join("")}</div></div>
+      <div class="notice iphone-empty ipad-noresults" style="display:none">No results. Try a different search.</div>`;
+  let thread;
+  if (isTeam) {
+    // Pinned team group chat (2026-11-21): ONE shared thread in
+    // state.teamChat, readable/writable by all three team accounts.
+    // Starts EMPTY — never seeded. Mine blue right, others grey with
+    // the sender's name above.
+    const msgs = ((state.teamChat && state.teamChat.messages) || []);
+    thread = `
+      <div class="iphone-thread-head">
+        <span class="im-avatar iphone-head-avatar">SFB</span>
+        <span class="iphone-head-name"><b>SFB SALES TEAM</b><span>Group chat — Roman, Logan, Braylen</span></span>
+      </div>
+      <div class="iphone-body"><div class="chat-thread iphone-thread">
+        ${msgs.length ? msgs.map((m) => {
+          const mine = m.by === me;
+          const who = DISPLAY_NAMES[m.by] || m.by;
+          return `${(m.date || m.time) ? `<div class="im-stamp">${esc(m.date || "")}${m.date && m.time ? " · " : ""}${esc(m.time || "")}</div>` : ""}${mine ? "" : `<div class="im-stamp" style="text-align:left;margin-left:4px">${esc(who)}</div>`}<div class="msg ${mine ? "out" : "in"}">${esc(m.text)}</div>`;
+        }).join("") : `<div class="notice iphone-empty">No messages yet — say hi to the team</div>`}
+      </div></div>`;
+  } else {
+    const lead = leadById(activeConv);
+    const conv = convFor(activeConv) || {messages: []};
+    const calls = callsFor(activeConv);
+    // Deleted lead: the thread stays readable under the name stored on
+    // its history (delete safeguard, 2026-11-21) — never blank.
+    const displayName = lead ? lead.business : leadNameFor(activeConv);
+    thread = `
+      <div class="iphone-thread-head">
+        <span class="im-avatar iphone-head-avatar">${esc(initialsFor(displayName))}</span>
+        <span class="iphone-head-name"><b>${esc(displayName)}</b><span>${esc(lead ? lead.phone : "")} · ${calls.length} call${calls.length === 1 ? "" : "s"} logged</span></span>
+      </div>
+      <div class="iphone-body"><div class="chat-thread iphone-thread">
+        ${calls.map((c) => `<div class="im-sys">Call — ${esc(callLabel(c.outcome))} · ${esc(c.date)} · ${esc(c.time)}</div>`).join("")}
+        ${(conv.messages || []).map((m) => `${(m.date || m.time) ? `<div class="im-stamp">${esc(m.date || "")}${m.date && m.time ? " · " : ""}${esc(m.time || "")}</div>` : ""}<div class="msg ${m.from === "me" ? "out" : "in"}">${esc(m.text)}</div>`).join("") || ""}
+        ${!calls.length && !(conv.messages || []).length ? `<div class="notice iphone-empty">No calls or messages yet for this lead.</div>` : ""}
+      </div></div>`;
+  }
+  return ipadChrome(`
+      <div class="ipad-body">
+        <div class="ipad-list">
+          <div class="iphone-title">Messages</div>
+          ${searchBar}
+          ${list}
+        </div>
+        <div class="ipad-thread">
+          ${thread}
+          <div class="chat-input iphone-input">
+            <input class="input" id="chat-input" type="text" placeholder="iMessage">
+            <button class="chat-send" id="chat-send" type="button" aria-label="Send">↑</button>
+          </div>
+          <p class="notice iphone-note">${isTeam ? "Messages here go to the whole team — Roman, Logan, and Braylen." : "Messages you type here are saved to this lead's thread. Outbound texts go through Google Voice — use the TEXT button in RIP MODE to send them."}</p>
+        </div>
+      </div>`);
 }
+
 function bindCallLog() {
-  const back = $("#back-convs");
-  if (back) back.onclick = () => { activeConv = null; render(); };
   document.querySelectorAll("[data-openconv]").forEach((el) => el.onclick = () => { activeConv = el.dataset.openconv; render(); });
   // iOS search: filters the unified list LIVE without a re-render, so the
   // input keeps focus while typing. Matches lead name / phone / message
-  // text / call outcome (each row carries them in data-search). The query
-  // survives re-renders (thread open/close) via phoneSearch.
+  // text / call outcome (each row carries them in data-search). The pinned
+  // team row is never hidden by the search. The query survives re-renders
+  // (thread open/close) via phoneSearch.
   const search = $("#phone-search");
   const applySearch = () => {
     const q = (search ? search.value : phoneSearch).trim().toLowerCase();
     phoneSearch = search ? search.value : "";
     let shown = 0;
-    document.querySelectorAll(".iphone-body .conv-item").forEach((el) => {
+    document.querySelectorAll(".ipad-list-body .conv-item").forEach((el) => {
+      if (el.classList.contains("team-pin")) return; // pinned row always stays
       const hit = !q || (el.dataset.search || "").includes(q);
       el.style.display = hit ? "" : "none";
       if (hit) shown++;
     });
-    const empty = $(".iphone-noresults");
+    const empty = $(".ipad-noresults");
     if (empty) empty.style.display = shown ? "none" : "";
     const clear = $("#phone-search-clear");
     if (clear) clear.style.display = phoneSearch ? "flex" : "none";
@@ -1519,7 +1761,8 @@ function bindCallLog() {
     const inp = $("#chat-input");
     const text = inp.value.trim();
     if (!text) return;
-    await mutate("addMessage", {leadId: activeConv, text, from: "me"});
+    if (!activeConv || activeConv === "__team__") await mutate("sendTeamMessage", {text});
+    else await mutate("addMessage", {leadId: activeConv, text, from: "me"});
   };
   if (send) send.onclick = sendMsg;
   const inp = $("#chat-input");
@@ -1558,7 +1801,7 @@ async function loadAiRep() {
 function aiRepOutcome(c) {
   const map = {
     "booked-link-sent": ["Booked", "green"], booking: ["Booking", "green"],
-    "message-taken": ["Message", ""], question: ["Question", ""],
+    "message-taken": ["Message", ""], message: ["Message", ""], question: ["Question", ""],
     silent: ["Missed", "amber"], "no-relay-session": ["Missed", "amber"],
     other: ["Other", ""],
   };
@@ -1568,6 +1811,36 @@ function aiRepWhen(iso) {
   try {
     return new Date(iso).toLocaleString("en-US", {month: "short", day: "numeric", hour: "numeric", minute: "2-digit", timeZone: "America/New_York"});
   } catch (_) { return iso || ""; }
+}
+// Honest booking-link / SMS status (2026-11-21, receptionist v1.5.0): the
+// worker reports bookingLinkSms / sms as {status, error?} with status
+// delivered | sent-unconfirmed | failed | undelivered | not-sent (plus the
+// older sent / pending / not_sent / skipped). bookingLinkSent is true only
+// when delivered on NEW records — but an OLD record with only
+// bookingLinkSent:true and no status field cannot prove delivery, so it
+// renders as "sent — delivery not confirmed", never "delivered".
+function aiRepLinkStatus(c) {
+  const s = (c && c.bookingLinkSms) || null;
+  const st = s && typeof s.status === "string" ? s.status : null;
+  const err = s && s.error ? String(s.error) : "";
+  if (st === "delivered") return "Booking link delivered";
+  if (st === "failed") return "Booking link not delivered" + (err ? " (" + err + ")" : "");
+  if (st === "sent-unconfirmed" || st === "sent" || st === "pending") return "Booking link sent — delivery not confirmed";
+  if (st === "undelivered" || st === "not-sent" || st === "not_sent" || st === "skipped") return err ? "Booking link not sent (" + err + ")" : "";
+  if (c && c.bookingLinkSent) return "Booking link sent — delivery not confirmed";
+  return "";
+}
+function aiRepSmsStatus(sms) {
+  if (!sms) return "";
+  const st = typeof sms.status === "string" ? sms.status : null;
+  const err = sms.error ? String(sms.error) : "";
+  if (st === "delivered") return "delivered";
+  if (st === "failed" || st === "undelivered") return "not sent" + (err ? " (" + err + ")" : "");
+  if (st === "sent-unconfirmed" || st === "sent" || st === "pending") return "sent — delivery not confirmed";
+  if (st === "not-sent" || st === "not_sent" || st === "skipped") return "not sent" + (err ? " (" + err + ")" : "");
+  if (sms.ok === true) return "sent — delivery not confirmed";
+  if (sms.ok === false) return "not sent" + (err ? " (" + err + ")" : "");
+  return "not sent";
 }
 function renderAiRep() {
   if (!aiRepLoaded) {
@@ -1597,15 +1870,16 @@ function renderAiRep() {
   <div class="section-title">Recent calls</div>
   ${calls.length ? calls.map((c) => {
     const [label, cls] = aiRepOutcome(c);
+    const linkNote = aiRepLinkStatus(c);
     const open = !!aiRepExpanded[c.callSid || c.id];
     const turns = c.turns || [];
     return `<div class="card" style="margin-bottom:12px">
-      <div class="kv"><span><b>${esc(c.from || "Unknown caller")}</b><br><span style="color:var(--muted);font-size:13px">${esc(aiRepWhen(c.startedAt))}${c.durationSec ? " · " + fmtElapsed(c.durationSec) : ""}${c.bookingLinkSent ? " · Booking link texted" : ""}</span></span>
+      <div class="kv"><span><b>${esc(c.from || "Unknown caller")}</b><br><span style="color:var(--muted);font-size:13px">${esc(aiRepWhen(c.startedAt))}${c.durationSec ? " · " + fmtElapsed(c.durationSec) : ""}${linkNote ? " · " + esc(linkNote) : ""}</span></span>
       <span class="badge ${cls}">${esc(label)}</span></div>
       <p class="lead-line">${esc(c.summary || "No summary yet.")}</p>
       <button class="btn" data-airep-expand="${esc(c.callSid || c.id)}">${open ? "Hide transcript" : "Show transcript"}</button>
       ${open ? `<div style="margin-top:10px">${turns.length ? turns.map((t) => `<div class="lead-line"><b>${t.role === "user" ? "Caller" : "Receptionist"}:</b> ${esc(t.text)}</div>`).join("") : `<div class="notice">No transcript — the caller hung up before speaking.</div>`}
-      ${c.sms ? `<p class="notice">Owner summary SMS: ${c.sms.ok ? "sent" : "not sent (" + esc(c.sms.error || "unknown") + ")"}</p>` : ""}</div>` : ""}
+      ${c.sms ? `<p class="notice">Owner summary SMS: ${esc(aiRepSmsStatus(c.sms))}</p>` : ""}</div>` : ""}
     </div>`;
   }).join("") : `<div class="card"><div class="notice">No inbound calls yet. Call ${esc(st.number || "+1 239 349 9491")} from a phone to test it — the call will show up here.</div></div>`}
   <div class="section-title">Customize — what callers hear</div>
@@ -1697,6 +1971,7 @@ const ANALYTICS_REPS = [
   {username: "braylengarrett", name: "Braylen Garrett"},
 ];
 let analyticsRange = "7d";
+let analyticsScope = "company"; // "company" | "me" | username — per-session, default Company
 let analyticsRepCalls = [], analyticsRepError = "", analyticsError = "";
 let analyticsLoading = false, analyticsLoaded = false;
 
@@ -1733,7 +2008,7 @@ function dayLabelOf(d) { return d.toLocaleDateString("en-US", {weekday: "short",
 // year, so they cannot be ranged reliably. Entries with unparseable
 // dates are excluded (the server always writes "Nov 20, 2026", so this
 // should not happen in practice).
-function computeAnalytics(st, repCalls, range, nowMs) {
+function computeAnalytics(st, repCalls, range, nowMs, scopeUser) {
   const now = new Date(nowMs || Date.now());
   const todayStart = startOfDay(now);
   const tomorrowStart = new Date(todayStart); tomorrowStart.setDate(tomorrowStart.getDate() + 1);
@@ -1741,7 +2016,10 @@ function computeAnalytics(st, repCalls, range, nowMs) {
     : range === "7d" ? new Date(todayStart.getTime() - 6 * 24 * 60 * 60 * 1000)
     : new Date(0);
   const inRange = (d) => !!d && d >= rangeStart && d < tomorrowStart;
-  const calls = (st.callLogs || []).map((c) => ({...c, at: parseStoredDate(c.date, c.time)})).filter((c) => c.at && inRange(c.at));
+  const callsAll = (st.callLogs || []).map((c) => ({...c, at: parseStoredDate(c.date, c.time)})).filter((c) => c.at && inRange(c.at));
+  // Scope filter (2026-11-21): null = Company, a username = that person.
+  // The leaderboard below always uses callsAll (whole team, any scope).
+  const calls = scopeUser ? callsAll.filter((c) => c.by === scopeUser) : callsAll;
   const isConn = (c) => CONNECTED_OUTCOMES.includes(c.outcome);
   const dials = calls.length;
   const connected = calls.filter(isConn).length;
@@ -1753,7 +2031,7 @@ function computeAnalytics(st, repCalls, range, nowMs) {
   const meetingRate = connected ? Math.round((meetings / connected) * 1000) / 10 : null;
   // Dials per hour today: dials logged today over hours since midnight
   // (at least 15 minutes, so one early dial does not read as 60/hour).
-  const todayCalls = (st.callLogs || []).map((c) => ({...c, at: parseStoredDate(c.date, c.time)})).filter((c) => c.at && dayKeyOf(c.at) === dayKeyOf(now));
+  const todayCalls = calls.filter((c) => dayKeyOf(c.at) === dayKeyOf(now));
   const hoursToday = Math.max(0.25, (now - todayStart) / 3600000);
   const dialsPerHour = todayCalls.length ? Math.round((todayCalls.length / hoursToday) * 10) / 10 : null;
   // Per-day buckets: today (1), 7d (7), all (every day with data, most recent 14).
@@ -1796,7 +2074,7 @@ function computeAnalytics(st, repCalls, range, nowMs) {
   const perLead = [...livePerLead, ...orphanPerLead]
     .sort((a, b) => b.dials - a.dials || (a.business < b.business ? -1 : 1));
   // Per rep (in range) — all three, zeros and all.
-  const perRep = ANALYTICS_REPS.map((r) => {
+  const perRep = ANALYTICS_REPS.filter((r) => !scopeUser || r.username === scopeUser).map((r) => {
     const rc = calls.filter((c) => c.by === r.username);
     return {username: r.username, name: r.name, dials: rc.length, connected: rc.filter(isConn).length, meetings: rc.filter((c) => c.outcome === "meeting_booked").length};
   });
@@ -1811,8 +2089,22 @@ function computeAnalytics(st, repCalls, range, nowMs) {
   reps.forEach((c) => { const [label] = aiRepOutcome(c); repOutCounts[label] = (repOutCounts[label] || 0) + 1; });
   const repOutcomes = Object.keys(repOutCounts).map((label) => ({label, count: repOutCounts[label]})).sort((a, b) => b.count - a.count);
   const repRecent = [...reps].sort((a, b) => b.at - a.at).slice(0, 5);
+  // Leaderboard (2026-11-21): whole-team ranking for the selected range —
+  // it IGNORES the scope filter (a leaderboard compares the team). Ranked
+  // by meetings, then connected, then dials. Talk minutes come from the
+  // per-user caps counters, which only exist for today.
+  const capsUsers = (capsData && capsData.users) || null;
+  const leaderboard = ANALYTICS_REPS.map((r) => {
+    const rc = callsAll.filter((c) => c.by === r.username);
+    const rDials = rc.length;
+    const rConn = rc.filter(isConn).length;
+    const rMeetings = rc.filter((c) => c.outcome === "meeting_booked").length;
+    const talkSec = capsUsers && capsUsers[r.username] ? (capsUsers[r.username].talkSec || 0) : null;
+    return {username: r.username, name: r.name, dials: rDials, connected: rConn, connectRate: rDials ? Math.round((rConn / rDials) * 1000) / 10 : null, meetings: rMeetings, talkMin: (range === "today" && talkSec !== null) ? Math.round((talkSec / 60) * 10) / 10 : null};
+  }).sort((a, b) => b.meetings - a.meetings || b.connected - a.connected || b.dials - a.dials);
   return {
     range, rangeLabel: (ANALYTICS_RANGES.find((r) => r[0] === range) || ["", ""])[1],
+    leaderboard, leaderboardTalkNote: range === "today" ? "" : "Talk minutes are tracked daily — shown for Today only.", scoped: !!scopeUser,
     dials, connected, noAnswer, voicemail, busy, meetings,
     connectRate, meetingRate, dialsPerHour, todayDials: todayCalls.length,
     perDay, outcomes, perLead, perRep,
@@ -1866,12 +2158,26 @@ function renderAnalytics() {
   if (!analyticsLoaded) {
     return `<div class="card"><div class="notice">Loading analytics…</div><button class="btn" id="an-refresh">Refresh</button></div>`;
   }
-  const a = computeAnalytics(state, analyticsRepCalls, analyticsRange);
+  const scopeUser = analyticsScope === "me" ? me : (analyticsScope === "company" ? null : analyticsScope);
+  const a = computeAnalytics(state, analyticsRepCalls, analyticsRange, undefined, scopeUser);
   const rangeBtns = ANALYTICS_RANGES.map(([v, label]) => `<button class="btn ${analyticsRange === v ? "btn--primary" : ""}" data-anrange="${v}" aria-pressed="${analyticsRange === v}">${label}</button>`).join("");
   const pct = (v) => (v === null ? "—" : v + "%");
+  const maxLbMeetings = Math.max(0, ...a.leaderboard.map((r) => r.meetings));
   const empty = a.empty ? `<div class="card"><div class="notice">No calls yet — dial a lead in RIP MODE or wait for an inbound call. These numbers fill in from real calls only; nothing here is seeded or estimated.</div></div>` : "";
   return `
   <div class="an-range">${rangeBtns}<button class="btn" id="an-refresh">Refresh</button></div>
+  <div class="card"><div class="seg-toggle" role="group" aria-label="Analytics scope">
+    <button type="button" class="${analyticsScope === "company" ? "seg-on" : ""}" data-anscope="company">Company</button>
+    <button type="button" class="${analyticsScope === "me" ? "seg-on" : ""}" data-anscope="me">Personal</button>
+  </div>
+  <select class="input" id="an-member" style="margin-top:8px" aria-label="Team member">
+    <option value="">Team member…</option>
+    ${ANALYTICS_REPS.map((r) => `<option value="${r.username}" ${analyticsScope === r.username ? "selected" : ""}>${esc(r.name)}</option>`).join("")}
+  </select>
+  <p class="notice">Personal shows only your numbers. Picking a team member shows theirs. The leaderboard below always shows the full team.</p></div>
+  <div class="card"><div class="section-title" style="margin-top:0">Leaderboard — ${esc(a.rangeLabel)}</div>
+    ${a.leaderboard.map((r, i) => `<div class="lb-row"><span class="lb-rank">#${i + 1}</span><span class="lb-name">${esc(r.name)}</span><span class="lb-nums">${r.dials} dials · ${r.connected} connected · ${r.connectRate === null ? "—" : r.connectRate + "%"} · ${r.meetings} meetings · ${r.talkMin === null ? "—" : r.talkMin + " min talk"}</span><span class="lb-bar"><span style="width:${maxLbMeetings ? Math.round((r.meetings / maxLbMeetings) * 100) : 0}%"></span></span></div>`).join("")}
+    <p class="notice">Ranked by meetings booked, then connected, then dials. Always the full team, whatever the scope filter is.${a.leaderboardTalkNote ? " " + esc(a.leaderboardTalkNote) : ""}</p></div>
   ${capsCardHtml()}
   ${analyticsError ? `<div class="card"><div class="error">${esc(analyticsError)}</div></div>` : ""}
   ${analyticsRepError ? `<div class="card"><div class="notice">Receptionist calls could not be loaded — ${esc(analyticsRepError)} The outbound numbers below are still real.</div></div>` : ""}
@@ -1889,6 +2195,7 @@ function renderAnalytics() {
       <div class="stat-box"><div class="num">${a.dialsPerHour === null ? "—" : a.dialsPerHour}</div><div class="lbl">Dials / hour today</div></div>
       <div class="stat-box"><div class="num">${a.repTotal}</div><div class="lbl">Receptionist calls</div></div>
     </div>
+    ${scopeUser ? `<p class="notice">Receptionist calls are team-wide — no per-person attribution</p>` : ""}
     <p class="notice">Dials = logged call events. A call that ends in a booking logs twice — the call and the booking — so Dials can run ahead of calls placed. Connect rate = connected ÷ dials. Meeting conversion = meetings ÷ connected.</p>
   </div>
   <div class="card">
@@ -1928,6 +2235,9 @@ function renderAnalytics() {
 
 function bindAnalytics() {
   document.querySelectorAll("[data-anrange]").forEach((b) => b.onclick = () => { analyticsRange = b.dataset.anrange; render(); });
+  document.querySelectorAll("[data-anscope]").forEach((b) => b.onclick = () => { analyticsScope = b.dataset.anscope; render(); });
+  const anMember = $("#an-member");
+  if (anMember) anMember.onchange = () => { if (anMember.value) { analyticsScope = anMember.value; render(); } };
   const refresh = $("#an-refresh");
   if (refresh) refresh.onclick = () => { analyticsLoaded = false; loadAnalytics(); };
   const go = $("#an-goto-airep");
@@ -1977,14 +2287,368 @@ async function loadAnalytics() {
   if (currentTab === "analytics") render();
 }
 
+/* ---------- EMAIL ---------- */
+// Approved copy — SOP §7, verbatim. Never invent template wording.
+// [VSL link] in E4 is an editable placeholder, never a guessed URL.
+const EMAIL_TEMPLATES = [
+  {id: "e1", name: "Meeting booked confirmation", subject: "Your discovery call is booked — [Business]",
+   body: "Hi [Name],\n\nYou're booked in for a free 30-minute discovery call about [Business].\n\nOn the call we'll run your free audit and put together a scope for what we'd build for you — what it would do, and what it would cost. No obligation.\n\nIf you need to move it, reply to this email or rebook here: [Link]\n\nTalk soon,\nRoman Royce — Six Figure Blueprints"},
+  {id: "e2", name: "No-answer follow-up", subject: "Missed you — free audit for [Business]",
+   body: "Hi [Name],\n\nTried you earlier about [Business] — we help businesses answer every call with AI, so no customer ever gets voicemail again.\n\nI'd like to run a free audit for you: how many calls you're missing, and what those missed calls are costing. It takes 30 minutes and there's no obligation.\n\nBook a time here: [Link]\n\nRoman Royce — Six Figure Blueprints"},
+  {id: "e3", name: "Voicemail follow-up", subject: "Left you a voicemail — [Business]",
+   body: "Hi [Name],\n\nLeft you a quick voicemail — we build AI receptionists for businesses like [Business], so every call gets answered, booked, or messaged, 24/7.\n\nThe first step is a free 30-minute discovery call. On it we run a free audit of your missed calls and scope out what we'd build.\n\nBook here: [Link]\n\nRoman Royce — Six Figure Blueprints"},
+  {id: "e4", name: "Send VSL", subject: "The video I mentioned — [Business]",
+   body: "Hi [Name],\n\nHere's the short video on what we do for businesses like [Business]: [VSL link]\n\nIn short: an AI receptionist answers every call, books the job, and follows up — so nothing slips through.\n\nIf you want the free audit we talked about, grab a time here: [Link]\n\nRoman Royce — Six Figure Blueprints"},
+  {id: "e5", name: "Callback request", subject: "You asked for a callback — [Business]",
+   body: "Hi [Name],\n\nYou asked us to call you back about [Business]. We'll ring you during business hours.\n\nIf it's easier, you can also grab a time for a free discovery call here: [Link] — we'll run your free audit on the call.\n\nRoman Royce — Six Figure Blueprints"},
+];
+function mergeEmailTemplate(tpl, lead, dateTime) {
+  const name = (lead && (lead.owner || lead.business)) || "";
+  const biz = (lead && lead.business) || "";
+  const sub = (s) => String(s || "").split("[Name]").join(name).split("[Business]").join(biz).split("[Link]").join(CAL_LINK).split("[Date/Time]").join(dateTime || "");
+  return {subject: sub(tpl.subject), body: sub(tpl.body)};
+}
+let emailConnected = null; // null = unknown, true/false from GET /api/email/status
+let emailLeadId = null;
+let emailQuery = "";
+let emailTplKey = "e1";
+async function loadEmailStatus() {
+  try { const r = await api("/email/status", "GET"); emailConnected = !!r.connected; }
+  catch (e) { emailConnected = null; }
+  try { await loadState(); } catch (e) {}
+  if (currentTab === "email") render();
+}
+function emailTemplateByKey(key) {
+  const b = EMAIL_TEMPLATES.find((t) => t.id === key);
+  if (b) return b;
+  return (state.emailTemplates || []).find((t) => t.id === key) || null;
+}
+function renderEmail() {
+  const isOwner = roleFor(me) === "owner";
+  const lead = leadById(emailLeadId);
+  const cur = emailTemplateByKey(emailTplKey) || EMAIL_TEMPLATES[0];
+  const merged = lead ? mergeEmailTemplate(cur, lead, "") : {subject: cur.subject, body: cur.body};
+  const log = (state.emailLog || []).slice().reverse();
+  const banner = emailConnected === false
+    ? `<div class="card email-banner"><b>Email is not connected yet.</b><br><span>The Resend key still needs to be connected — the Chrome extension block on agent.meta.ai is stopping the key from being submitted. Sends are disabled until then, and nothing here is ever recorded as sent.</span></div>`
+    : emailConnected === null
+    ? `<p class="notice">Checking email connection…</p>` : "";
+  const tplOptions = EMAIL_TEMPLATES.map((t) => `<option value="${t.id}" ${emailTplKey === t.id ? "selected" : ""}>${esc(t.name)}</option>`).join("")
+    + (state.emailTemplates || []).map((t) => `<option value="${t.id}" ${emailTplKey === t.id ? "selected" : ""}>${esc(t.name)} (custom)</option>`).join("");
+  return `
+  ${banner}
+  <div class="card"><div class="section-title" style="margin-top:0">Compose</div>
+    <div class="field"><label>To — pick a lead</label>
+      <div class="lead-picker-wrap">
+        <input class="input" id="email-lead-input" type="text" placeholder="Search leads…" value="${esc(emailQuery)}" autocomplete="off" role="combobox" aria-expanded="false" aria-controls="email-lead-list">
+        <button type="button" class="lead-picker-clear" id="email-lead-clear" aria-label="Clear lead search" style="display:${emailQuery ? "block" : "none"}">×</button>
+        <div class="lead-picker-list hidden" id="email-lead-list" role="listbox"></div>
+      </div>
+    </div>
+    <div class="field"><label>To (email)</label><input class="input" id="email-to" type="email" placeholder="owner@business.com" value="${esc(lead && lead.email ? lead.email : "")}"></div>
+    <div class="field"><label>Template</label><select class="input" id="email-template">${tplOptions}</select></div>
+    <div class="field"><label>Subject</label><input class="input" id="email-subject" type="text" value="${esc(merged.subject)}"></div>
+    <div class="field"><label>Body</label><textarea class="input" id="email-body" rows="10">${esc(merged.body)}</textarea></div>
+    <button class="btn btn--primary" id="email-send" type="button" ${emailConnected === false ? "disabled" : ""}>Send email</button>
+    <p class="notice">Sends count against the daily email cap — team 100/day, you 33/day. From roman@sixfigureblueprintsllc.com. Replace [VSL link] with the real video link before sending — it is never sent as-is.</p>
+  </div>
+  <div class="card"><div class="section-title" style="margin-top:0">Templates</div>
+    ${EMAIL_TEMPLATES.map((t) => `<div class="kv"><span><b>${esc(t.name)}</b><br><span style="color:var(--muted);font-size:13px">${esc(t.subject)}</span></span><button class="btn" type="button" data-use-tpl="${t.id}">Use</button></div>`).join("")}
+    ${(state.emailTemplates || []).map((t) => `<div class="kv"><span><b>${esc(t.name)} (custom)</b><br><span style="color:var(--muted);font-size:13px">${esc(t.subject)}</span></span><span style="display:flex;gap:6px"><button class="btn" type="button" data-use-tpl="${t.id}">Use</button>${isOwner ? `<button class="btn btn-danger" type="button" data-del-tpl="${t.id}">Delete</button>` : ""}</span></div>`).join("")}
+    ${isOwner ? `<div class="field" style="margin-top:12px"><label>Save a custom template</label><input class="input" id="tpl-name" type="text" placeholder="Template name"><input class="input" id="tpl-subject" type="text" placeholder="Subject" style="margin-top:6px"><textarea class="input" id="tpl-body" rows="4" placeholder="Body — use [Name], [Business], [Link] to merge" style="margin-top:6px"></textarea><button class="btn" id="tpl-save" type="button" style="margin-top:6px">Save template</button></div>`
+    : `<p class="notice">Only the owner can save or delete templates — you can use any template above.</p>`}
+  </div>
+  <div class="card"><div class="section-title" style="margin-top:0">Sent log</div>
+    ${log.length ? log.map((e) => `<div class="kv"><span><b>${esc(e.subject)}</b> → ${esc(e.to)}${e.leadName ? " · " + esc(e.leadName) : ""}<br><span style="color:var(--muted);font-size:13px">${esc(DISPLAY_NAMES[e.by] || e.by || "")} · ${esc(e.date || "")} ${esc(e.time || "")}${e.error ? " — " + esc(e.error) : ""}${e.resendId ? " · " + esc(e.resendId) : ""}</span></span><span class="badge ${e.status === "sent" ? "green" : e.status === "failed" ? "red" : "amber"}">${esc(e.status)}</span></div>`).join("")
+    : `<p class="notice">No emails yet — nothing has been sent.</p>`}
+  </div>`;
+}
+function fillEmailFromTemplate() {
+  const tpl = emailTemplateByKey(emailTplKey);
+  if (!tpl) return;
+  const lead = leadById(emailLeadId);
+  const merged = lead ? mergeEmailTemplate(tpl, lead, "") : {subject: tpl.subject, body: tpl.body};
+  const s = $("#email-subject"), b = $("#email-body");
+  if (s) s.value = merged.subject;
+  if (b) b.value = merged.body;
+}
+function bindEmail() {
+  bindLeadPicker({inputId: "email-lead-input", listId: "email-lead-list", clearId: "email-lead-clear",
+    getQuery: () => emailQuery, setQuery: (v) => { emailQuery = v; },
+    getSelectedId: () => emailLeadId, setSelectedId: (id) => { emailLeadId = id; },
+    onPick: (lead) => { const to = $("#email-to"); if (to) to.value = lead ? (lead.email || "") : ""; fillEmailFromTemplate(); }});
+  const sel = $("#email-template");
+  if (sel) sel.onchange = () => { emailTplKey = sel.value; fillEmailFromTemplate(); };
+  document.querySelectorAll("[data-use-tpl]").forEach((b) => { b.onclick = () => { emailTplKey = b.dataset.useTpl; const s2 = $("#email-template"); if (s2) s2.value = emailTplKey; fillEmailFromTemplate(); }; });
+  const send = $("#email-send");
+  if (send) send.onclick = async () => {
+    const lead = leadById(emailLeadId);
+    if (!lead) { showToast("Pick a lead first."); return; }
+    const to = $("#email-to").value.trim();
+    const subject = $("#email-subject").value;
+    const body = $("#email-body").value;
+    if (body.indexOf("[VSL link]") !== -1) { showToast("Replace [VSL link] with the real video link before sending."); return; }
+    try {
+      await mutate("sendEmail", {leadId: lead.id, to, subject, body});
+      showToast("Email sent to " + to + ".");
+    } catch (e) {
+      try { await loadState(); } catch (_) {}
+      render();
+      showToast("Email not sent — " + (e.message || "try again."));
+    }
+  };
+  const save = $("#tpl-save");
+  if (save) save.onclick = async () => {
+    const name = $("#tpl-name").value.trim();
+    const subject = $("#tpl-subject").value;
+    const body = $("#tpl-body").value;
+    if (!name || !subject.trim() || !body.trim()) { showToast("Fill in a template name, subject, and body."); return; }
+    try { await mutate("saveEmailTemplate", {name, subject, body}); showToast("Template saved."); }
+    catch (e) { showToast("Template not saved — " + (e.message || "try again.")); }
+  };
+  document.querySelectorAll("[data-del-tpl]").forEach((b) => { b.onclick = () => {
+    const t = (state.emailTemplates || []).find((x) => x.id === b.dataset.delTpl);
+    confirmAction({title: "Delete this template?", body: t ? t.name : "", confirmLabel: "Delete template",
+      onConfirm: async () => { try { await mutate("deleteEmailTemplate", {id: b.dataset.delTpl, confirmed: true}); } catch (e) { showToast("Delete failed — " + (e.message || "try again.")); } }});
+  }; });
+}
+
+/* ---------- ASSIGNMENTS / ANNOUNCEMENTS / TODAY ---------- */
+let assignFilter = "all"; // all | mine | <username>
+let assignStatusFilter = "all"; // all | todo | doing | done
+let assignEditingId = null;
+let todayScope = "mine"; // mine | team
+function todayETStr() { return new Date().toLocaleDateString("en-CA", {timeZone: "America/New_York"}); }
+function assignDueState(a) {
+  if (!a.dueDate || a.status === "done") return "none";
+  const t = todayETStr();
+  if (a.dueDate < t) return "overdue";
+  if (a.dueDate === t) return "today";
+  return "future";
+}
+function assignDueLabel(a) {
+  if (!a.dueDate) return "No due date";
+  const st = assignDueState(a);
+  const parts = a.dueDate.split("-");
+  const label = parts.length === 3 ? new Date(Number(parts[0]), Number(parts[1]) - 1, Number(parts[2])).toLocaleDateString("en-US", {month: "short", day: "numeric"}) : a.dueDate;
+  if (st === "overdue") return "Overdue · " + label;
+  if (st === "today") return "Due today · " + label;
+  return "Due " + label;
+}
+function sortAssignments(list) {
+  const rank = (a) => assignDueState(a) === "overdue" ? 0 : assignDueState(a) === "today" ? 1 : a.dueDate ? 2 : 3;
+  return list.slice().sort((a, b) => rank(a) - rank(b) || String(a.dueDate || "9999").localeCompare(String(b.dueDate || "9999")) || String(a.createdAt || "").localeCompare(String(b.createdAt || "")));
+}
+function canChangeAssignment(a) { return roleFor(me) === "owner" || a.assignee === me; }
+function assignRowHtml(a) {
+  const isOwner = roleFor(me) === "owner";
+  const canChange = canChangeAssignment(a);
+  const dueSt = assignDueState(a);
+  const nextStatus = a.status === "todo" ? "doing" : a.status === "doing" ? "done" : "todo";
+  const nextLabel = a.status === "todo" ? "Start" : a.status === "doing" ? "Mark done" : "Reopen";
+  if (assignEditingId === a.id && isOwner) {
+    return `<div class="card assign-row"><div class="field"><label>Title</label><input class="input" id="asg-edit-title" type="text" value="${esc(a.title)}"></div>
+    <div class="field"><label>Details</label><textarea class="input" id="asg-edit-details" rows="3">${esc(a.details || "")}</textarea></div>
+    <div class="field"><label>Assignee</label><select class="input" id="asg-edit-assignee">${["romanroyce", "loganwells", "braylengarrett"].map((u) => `<option value="${u}" ${a.assignee === u ? "selected" : ""}>${esc(DISPLAY_NAMES[u])}</option>`).join("")}</select></div>
+    <div class="field"><label>Due date</label><input class="input" id="asg-edit-due" type="date" value="${esc(a.dueDate || "")}"></div>
+    <div style="display:flex;gap:8px"><button class="btn btn--primary" type="button" data-asg-save="${a.id}">Save</button><button class="btn" type="button" data-asg-cancel>Cancel</button></div></div>`;
+  }
+  return `<div class="card assign-row"><div style="display:flex;gap:10px;align-items:flex-start">
+    <span class="avatar" style="flex:none">${esc(INITIALS[a.assignee] || "?")}</span>
+    <div style="flex:1;min-width:0"><b>${esc(a.title)}</b>
+      <div style="color:var(--muted);font-size:13px">${esc(DISPLAY_NAMES[a.assignee] || a.assignee)} · <span class="${dueSt === "overdue" ? "overdue" : ""}">${esc(assignDueLabel(a))}</span>${a.status === "done" && a.completedAt ? " · Done " + esc(a.completedAt) : ""}</div>
+      ${a.details ? `<div style="font-size:13px;margin-top:4px">${esc(a.details)}</div>` : ""}
+    </div>
+    <span class="badge ${a.status === "done" ? "green" : a.status === "doing" ? "amber" : ""}">${esc(a.status)}</span></div>
+    <div style="display:flex;gap:8px;margin-top:10px;flex-wrap:wrap">
+      ${canChange ? `<button class="btn" type="button" data-asg-status="${a.id}" data-next="${nextStatus}">${nextLabel}</button>` : ""}
+      ${isOwner ? `<button class="btn" type="button" data-asg-edit="${a.id}">Edit</button><button class="btn btn-danger" type="button" data-asg-del="${a.id}">Delete</button>` : ""}
+    </div></div>`;
+}
+function renderAssignments() {
+  const isOwner = roleFor(me) === "owner";
+  let list = state.assignments || [];
+  if (assignFilter === "mine") list = list.filter((a) => a.assignee === me);
+  else if (assignFilter !== "all") list = list.filter((a) => a.assignee === assignFilter);
+  if (assignStatusFilter !== "all") list = list.filter((a) => a.status === assignStatusFilter);
+  list = sortAssignments(list);
+  return `
+  ${isOwner ? `<div class="card"><div class="section-title" style="margin-top:0">New assignment</div>
+    <div class="field"><label>Title</label><input class="input" id="asg-title" type="text" placeholder="What needs doing?"></div>
+    <div class="field"><label>Details</label><textarea class="input" id="asg-details" rows="2" placeholder="Optional details"></textarea></div>
+    <div class="field"><label>Assignee</label><select class="input" id="asg-assignee">${["romanroyce", "loganwells", "braylengarrett"].map((u) => `<option value="${u}">${esc(DISPLAY_NAMES[u])}</option>`).join("")}</select></div>
+    <div class="field"><label>Due date</label><input class="input" id="asg-due" type="date"></div>
+    <button class="btn btn--primary" id="asg-add" type="button">Create assignment</button></div>` : ""}
+  <div class="card"><div style="display:flex;gap:8px;flex-wrap:wrap">
+    <select class="input" id="asg-filter" style="flex:1;min-width:160px">
+      <option value="all" ${assignFilter === "all" ? "selected" : ""}>All assignments</option>
+      <option value="mine" ${assignFilter === "mine" ? "selected" : ""}>Mine</option>
+      ${["romanroyce", "loganwells", "braylengarrett"].map((u) => `<option value="${u}" ${assignFilter === u ? "selected" : ""}>${esc(DISPLAY_NAMES[u])}</option>`).join("")}
+    </select>
+    <select class="input" id="asg-status-filter" style="flex:1;min-width:140px">
+      <option value="all" ${assignStatusFilter === "all" ? "selected" : ""}>All statuses</option>
+      <option value="todo" ${assignStatusFilter === "todo" ? "selected" : ""}>To do</option>
+      <option value="doing" ${assignStatusFilter === "doing" ? "selected" : ""}>Doing</option>
+      <option value="done" ${assignStatusFilter === "done" ? "selected" : ""}>Done</option>
+    </select></div></div>
+  ${list.length ? list.map(assignRowHtml).join("") : `<div class="card"><p class="notice">No assignments yet — the owner can create the first one.</p></div>`}`;
+}
+function bindAssignments() {
+  const add = $("#asg-add");
+  if (add) add.onclick = async () => {
+    const title = $("#asg-title").value.trim();
+    if (!title) { showToast("Enter an assignment title."); return; }
+    try { await mutate("addAssignment", {title, details: $("#asg-details").value, assignee: $("#asg-assignee").value, dueDate: $("#asg-due").value}); }
+    catch (e) { showToast("Assignment not created — " + (e.message || "try again.")); }
+  };
+  const f = $("#asg-filter");
+  if (f) f.onchange = () => { assignFilter = f.value; render(); };
+  const sf = $("#asg-status-filter");
+  if (sf) sf.onchange = () => { assignStatusFilter = sf.value; render(); };
+  document.querySelectorAll("[data-asg-status]").forEach((b) => { b.onclick = async () => {
+    try { await mutate("setAssignmentStatus", {id: b.dataset.asgStatus, status: b.dataset.next}); }
+    catch (e) { showToast("Status not changed — " + (e.message || "try again.")); }
+  }; });
+  document.querySelectorAll("[data-asg-edit]").forEach((b) => { b.onclick = () => { assignEditingId = b.dataset.asgEdit; render(); }; });
+  document.querySelectorAll("[data-asg-cancel]").forEach((b) => { b.onclick = () => { assignEditingId = null; render(); }; });
+  document.querySelectorAll("[data-asg-save]").forEach((b) => { b.onclick = async () => {
+    try { await mutate("updateAssignment", {id: b.dataset.asgSave, title: $("#asg-edit-title").value, details: $("#asg-edit-details").value, assignee: $("#asg-edit-assignee").value, dueDate: $("#asg-edit-due").value}); assignEditingId = null; }
+    catch (e) { showToast("Assignment not saved — " + (e.message || "try again.")); }
+  }; });
+  document.querySelectorAll("[data-asg-del]").forEach((b) => { b.onclick = () => {
+    const a = (state.assignments || []).find((x) => x.id === b.dataset.asgDel);
+    confirmAction({title: "Delete this assignment?", body: a ? a.title : "", confirmLabel: "Delete assignment",
+      onConfirm: async () => { try { await mutate("deleteAssignment", {id: b.dataset.asgDel, confirmed: true}); } catch (e) { showToast("Delete failed — " + (e.message || "try again.")); } }});
+  }; });
+}
+function renderAnnouncements() {
+  const isOwner = roleFor(me) === "owner";
+  const list = (state.announcements || []).slice().sort((a, b) => (b.pinned === true) - (a.pinned === true) || 0);
+  // pinned first, newest first within each group (array order is creation order)
+  const ordered = list.filter((a) => a.pinned).reverse().concat(list.filter((a) => !a.pinned).reverse());
+  return `
+  ${isOwner ? `<div class="card"><div class="section-title" style="margin-top:0">Post an announcement</div>
+    <div class="field"><label>Title</label><input class="input" id="ann-title" type="text" placeholder="Announcement title"></div>
+    <div class="field"><label>Body</label><textarea class="input" id="ann-body" rows="4" placeholder="What should the team know?"></textarea></div>
+    <label style="display:flex;gap:8px;align-items:center;font-size:14px;margin-bottom:12px"><input type="checkbox" id="ann-pin"> Pin to the top</label>
+    <button class="btn btn--primary" id="ann-post" type="button">Post announcement</button></div>` : ""}
+  ${ordered.length ? ordered.map((a) => `<div class="card"><div style="display:flex;gap:8px;align-items:flex-start"><div style="flex:1"><b>${a.pinned ? "📌 " : ""}${esc(a.title)}</b>
+    <div style="white-space:pre-wrap;font-size:14px;margin-top:4px">${esc(a.body)}</div>
+    <div style="color:var(--muted);font-size:13px;margin-top:6px">${esc(DISPLAY_NAMES[a.author] || a.author)} · ${esc(a.createdAt || "")}</div></div></div>
+    ${isOwner ? `<div style="display:flex;gap:8px;margin-top:10px"><button class="btn" type="button" data-ann-pin="${a.id}" data-pinned="${a.pinned ? "false" : "true"}">${a.pinned ? "Unpin" : "Pin"}</button><button class="btn btn-danger" type="button" data-ann-del="${a.id}">Delete</button></div>` : ""}</div>`).join("")
+  : `<div class="card"><p class="notice">No announcements yet.</p></div>`}`;
+}
+function bindAnnouncements() {
+  const post = $("#ann-post");
+  if (post) post.onclick = async () => {
+    const title = $("#ann-title").value.trim();
+    const body = $("#ann-body").value;
+    if (!title || !body.trim()) { showToast("Enter a title and a body."); return; }
+    try { await mutate("addAnnouncement", {title, body, pinned: $("#ann-pin").checked}); }
+    catch (e) { showToast("Announcement not posted — " + (e.message || "try again.")); }
+  };
+  document.querySelectorAll("[data-ann-pin]").forEach((b) => { b.onclick = async () => {
+    try { await mutate("setAnnouncementPin", {id: b.dataset.annPin, pinned: b.dataset.pinned === "true"}); }
+    catch (e) { showToast("Pin not changed — " + (e.message || "try again.")); }
+  }; });
+  document.querySelectorAll("[data-ann-del]").forEach((b) => { b.onclick = () => {
+    const a = (state.announcements || []).find((x) => x.id === b.dataset.annDel);
+    confirmAction({title: "Delete this announcement?", body: a ? a.title : "", confirmLabel: "Delete announcement",
+      onConfirm: async () => { try { await mutate("deleteAnnouncement", {id: b.dataset.annDel, confirmed: true}); } catch (e) { showToast("Delete failed — " + (e.message || "try again.")); } }});
+  }; });
+}
+function renderToday() {
+  const pool = (state.assignments || []).filter((a) => todayScope === "mine" ? a.assignee === me : true);
+  const t = todayETStr();
+  const due = pool.filter((a) => a.dueDate && a.dueDate <= t); // today + overdue, any status (done counts toward progress)
+  const total = due.length;
+  const doneCount = due.filter((a) => a.status === "done").length;
+  const open = sortAssignments(due.filter((a) => a.status !== "done"));
+  const row = (a) => `<div class="card assign-row"><label style="display:flex;gap:10px;align-items:flex-start;cursor:pointer">
+    <input type="checkbox" data-today-done="${a.id}" style="margin-top:4px">
+    <span style="flex:1"><b>${esc(a.title)}</b>
+    <span style="color:var(--muted);font-size:13px;display:block">${todayScope === "team" ? esc(DISPLAY_NAMES[a.assignee] || a.assignee) + " · " : ""}<span class="${assignDueState(a) === "overdue" ? "overdue" : ""}">${esc(assignDueLabel(a))}</span></span>
+    ${a.details ? `<span style="font-size:13px;display:block;margin-top:4px">${esc(a.details)}</span>` : ""}</span></label></div>`;
+  const groups = ["romanroyce", "loganwells", "braylengarrett"].map((u) => ({u, items: open.filter((a) => a.assignee === u)})).filter((g) => g.items.length);
+  return `
+  <div class="card"><div class="seg-toggle" role="tablist" aria-label="Whose tasks">
+    <button type="button" class="${todayScope === "mine" ? "seg-on" : ""}" data-today-scope="mine">Mine</button>
+    <button type="button" class="${todayScope === "team" ? "seg-on" : ""}" data-today-scope="team">Team</button>
+  </div>
+  <p style="margin:10px 0 0">${doneCount} of ${total} done today</p></div>
+  ${open.length ? (todayScope === "team" ? groups.map((g) => `<div class="section-title">${esc(DISPLAY_NAMES[g.u])}</div>` + g.items.map(row).join("")).join("") : open.map(row).join(""))
+  : `<div class="card"><p class="notice">Nothing due today</p></div>`}`;
+}
+function bindToday() {
+  document.querySelectorAll("[data-today-scope]").forEach((b) => { b.onclick = () => { todayScope = b.dataset.todayScope; render(); }; });
+  document.querySelectorAll("[data-today-done]").forEach((c) => { c.onchange = async () => {
+    if (!c.checked) return;
+    try { await mutate("setAssignmentStatus", {id: c.dataset.todayDone, status: "done"}); }
+    catch (e) { showToast("Task not marked done — " + (e.message || "try again.")); }
+  }; });
+}
+
+/* Generic confirm modal — same overlay id/classes as the lead-delete
+   safeguard (the harness expects #delete-confirm). Cancel, Escape, or the
+   backdrop closes it and does nothing. */
+function confirmAction(opts) {
+  closeDeleteConfirm();
+  const overlay = document.createElement("div");
+  overlay.className = "confirm-overlay";
+  overlay.id = "delete-confirm";
+  overlay.innerHTML = `<div class="card confirm-card" role="dialog" aria-label="${esc(opts.title)}">
+    <div class="section-title" style="margin-top:0">${esc(opts.title)}</div>
+    ${opts.body ? `<p><b>${esc(opts.body)}</b></p>` : ""}
+    <div style="display:flex;gap:8px;justify-content:flex-end;margin-top:14px">
+      <button class="btn" id="delete-cancel" type="button">Cancel</button>
+      <button class="btn btn-danger" id="delete-confirm-btn" type="button">${esc(opts.confirmLabel || "Delete")}</button>
+    </div>
+  </div>`;
+  overlay.addEventListener("click", (e) => { if (e.target === overlay) closeDeleteConfirm(); });
+  overlay.querySelector("#delete-cancel").onclick = () => closeDeleteConfirm();
+  overlay.querySelector("#delete-confirm-btn").onclick = async (e) => {
+    e.target.disabled = true;
+    closeDeleteConfirm();
+    try { await opts.onConfirm(); }
+    catch (err2) { showToast("Failed — " + (err2.message || "try again.")); }
+  };
+  document.body.appendChild(overlay);
+  document.addEventListener("keydown", confirmDeleteEscape);
+  const cancel = overlay.querySelector("#delete-cancel");
+  if (cancel) cancel.focus();
+}
+
+/* Staff account settings — read-only panel with the signed-in user's own
+   details only. No admin controls of any kind. */
+function openStaffSettings() {
+  const old = document.getElementById("staff-settings");
+  if (old) old.remove();
+  const overlay = document.createElement("div");
+  overlay.className = "confirm-overlay";
+  overlay.id = "staff-settings";
+  const rows = [["Display name", DISPLAY_NAMES[me] || me], ["Username", "@" + me], ["Role", roleFor(me)], ["Workspace", "Six Figure Blueprints"]];
+  overlay.innerHTML = `<div class="card confirm-card" role="dialog" aria-label="Your settings">
+    <div class="section-title" style="margin-top:0">Settings</div>
+    ${rows.map(([k, v]) => `<div class="kv staff-settings-row"><span>${esc(k)}</span><b>${esc(v)}</b></div>`).join("")}
+    <div style="display:flex;gap:8px;justify-content:flex-end;margin-top:14px">
+      <button class="btn btn--primary" id="staff-settings-close" type="button">Close</button>
+    </div>
+  </div>`;
+  const close = () => { overlay.remove(); document.removeEventListener("keydown", escClose); };
+  const escClose = (e) => { if (e.key === "Escape") close(); };
+  overlay.addEventListener("click", (e) => { if (e.target === overlay) close(); });
+  overlay.querySelector("#staff-settings-close").onclick = close;
+  document.body.appendChild(overlay);
+  document.addEventListener("keydown", escClose);
+}
 /* ---------- CONNECTIONS ---------- */
 function renderConnections() {
   const rows = [
     ["Google Voice", "Connected", "Calling + texting from (213) 495-3536. Free. No API — TEXT opens Google Voice; CALL uses Twilio when live, Google Voice until then.", "green"],
-    ["Cal.com", "Connected", "5 event types verified. Booking link: " + CAL_LINK, "green"],
+    ["Cal.com", "Connected", "7 event types verified. Booking link: " + CAL_LINK, "green"],
     ["Gmail", "Connected via Muse", "Muse connector is connected. This app does not sync Gmail itself.", "green"],
     ["Google Calendar / Meet", "Connected via Muse", "Muse connector is connected. Meet links are created through Calendar events.", "green"],
-    ["Resend", "Key pending", "Domain sixfigureblueprintsllc.com is verified in Resend. sfbconnect.com is NOT verified and cannot send. The auto-dialer key still needs to be submitted to Muse — until then, follow-up emails are queued, never claimed as sent.", "amber"],
+    ["Resend", "Key pending", "Domain sixfigureblueprintsllc.com is verified in Resend. sfbconnect.com is NOT verified and cannot send. The Resend key still needs to be connected (Chrome extension block on agent.meta.ai) — until then the Email tab shows \"Email is not connected yet\" and Send is disabled. Follow-up emails are queued, never claimed as sent.", "amber"],
     ["Twilio Voice", twilioReady === true ? "Connected" : twilioReady === false ? "Not set up yet" : "Checking…",
       twilioReady === true ? "In-dashboard calling is live — CALL dials through Twilio from the browser. One number, all three of you can call at once."
       : twilioReady === false ? "In-dashboard calling needs: Twilio upgrade + a number + API key and TwiML App set as worker env vars. Until then CALL opens Google Voice."
@@ -2006,6 +2670,10 @@ function bindTab() {
   else if (currentTab === "calllog") bindCallLog();
   else if (currentTab === "airep") bindAiRep();
   else if (currentTab === "analytics") bindAnalytics();
+  else if (currentTab === "email") bindEmail();
+  else if (currentTab === "assignments") bindAssignments();
+  else if (currentTab === "announcements") bindAnnouncements();
+  else if (currentTab === "today") bindToday();
 }
 
 /* ---------- login submit: NO <form> (2026-11-20) ----------
@@ -2038,9 +2706,6 @@ $("#login-username").addEventListener("input", async (e) => {
     try {
       const s = await api("/auth/check", "POST", {username: u});
       $("#confirm-wrap").classList.toggle("hidden", s.hasAccount);
-      $("#login-hint").textContent = s.hasAccount
-        ? "Welcome back — enter your 4-digit passcode."
-        : "First time for this username — set a 4-digit passcode and it will be saved for next time.";
     } catch (_) {}
   }
 });

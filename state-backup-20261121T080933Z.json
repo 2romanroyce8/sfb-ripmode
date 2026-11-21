@@ -1,0 +1,29 @@
+{
+  "leads": [],
+  "callLogs": [],
+  "conversations": [],
+  "meetings": [],
+  "followUps": [],
+  "sessionStats": {
+    "dials": 4,
+    "connected": 1,
+    "noAnswer": 0,
+    "voicemail": 0,
+    "meetings": 0,
+    "perHour": 0
+  },
+  "scripts": [
+    {
+      "title": "Roofer pitch",
+      "body": "Hi, this is Roman from SFB Connect \u2014 we build AI receptionists for roofers that answer every call, book jobs, and follow up automatically. Got 60 seconds for me to show you what that looks like for your company?",
+      "vm": "Hi, this is Roman from SFB Connect \u2014 we help roofers answer every call with AI and book more jobs. Call me back at (213) 495-3536."
+    }
+  ],
+  "campaigns": [
+    {
+      "id": "camp-roofer-pilot",
+      "name": "Roofer Pilot",
+      "status": "active"
+    }
+  ]
+}

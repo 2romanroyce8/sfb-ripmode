@@ -108,6 +108,16 @@ function seedState() {
     ],
     callLogs: [],
     conversations: [],
+    // Pinned team group chat (2026-11-21): ONE shared thread for the three
+    // team accounts. Starts EMPTY — never seeded with fake messages.
+    // Messages carry by (username) + text + date/time; the client maps
+    // the username to a display name. Only the three team accounts can
+    // read/write (every /api/state call is session-checked).
+    teamChat: { messages: [] },
+    assignments: [],
+    announcements: [],
+    emailTemplates: [],
+    emailLog: [],
     meetings: [],
     followUps: [],
     sessionStats: { dials: 0, connected: 0, noAnswer: 0, voicemail: 0, meetings: 0, perHour: 0 },
@@ -335,6 +345,7 @@ async function handleApi(request, env) {
   const url = new URL(request.url);
   let path = url.pathname;
   if (path.startsWith("/ripmode")) path = path.slice("/ripmode".length);
+  else if (path.startsWith("/salesteam")) path = path.slice("/salesteam".length);
   if (request.method === "OPTIONS") return json({ ok: true });
 
   // ---- auth ----
@@ -348,7 +359,7 @@ async function handleApi(request, env) {
   if (path === "/api/auth/signup" && request.method === "POST") {
     const { username, password } = await request.json().catch(() => ({}));
     const u = String(username || "").toLowerCase();
-    if (!ALLOWED_USERS.includes(u)) return err("That username is not on the team.");
+    if (!ALLOWED_USERS.includes(u)) return err("Wrong username or password", 401);
     if (!/^\d{4}$/.test(password || "")) return err("Enter a 4-digit passcode.");
     if (await env.RIPMODE_KV.get("users:" + u)) return err("That username already has an account — sign in instead.");
     const { salt, hash } = await hashPasscode(password);
@@ -359,13 +370,13 @@ async function handleApi(request, env) {
   if (path === "/api/auth/login" && request.method === "POST") {
     const { username, password } = await request.json().catch(() => ({}));
     const u = String(username || "").toLowerCase();
-    if (!ALLOWED_USERS.includes(u)) return err("Invalid username or passcode.", 401);
-    if (!/^\d{4}$/.test(password || "")) return err("Invalid username or passcode.", 401);
+    if (!ALLOWED_USERS.includes(u)) return err("Wrong username or password", 401);
+    if (!/^\d{4}$/.test(password || "")) return err("Wrong username or password", 401);
     const raw = await env.RIPMODE_KV.get("users:" + u);
-    if (!raw) return err("Invalid username or passcode.", 401);
+    if (!raw) return err("Wrong username or password", 401);
     const { salt, hash } = JSON.parse(raw);
     const attempt = await hashPasscode(password, salt);
-    if (attempt.hash !== hash) return err("Invalid username or passcode.", 401);
+    if (attempt.hash !== hash) return err("Wrong username or password", 401);
     const token = await newSession(env, u);
     return json({ token, username: u });
   }
@@ -408,6 +419,10 @@ async function handleApi(request, env) {
     const token = await mintVoiceToken(env, username);
     if (!token) return err("Calling not set up yet — Twilio is not configured on the server.", 503);
     return json({ token });
+  }
+  // GET /api/email/status — is Resend wired? Never returns the key.
+  if (path === "/api/email/status" && request.method === "GET") {
+    return json({ ok: true, connected: !!env.RESEND_API_KEY });
   }
 
   // ---- AI receptionist (session required; config saves are owner-only) ----
@@ -576,14 +591,20 @@ async function handleApi(request, env) {
   if (path === "/api/caps" && request.method === "GET") {
     const limits = await getCapsLimits(env);
     const date = etDateStr();
-    const [team, mine, smsRes, recep] = await Promise.all([
+    const [team, mine, smsRes, recep, userCounters] = await Promise.all([
       getCapsCounters(env, date),
       getCapsCounters(env, date, username),
       capsSmsFromReceptionist(),
       capsReceptionistToday(),
+      Promise.all(ALLOWED_USERS.map((u) => getCapsCounters(env, date, u))),
     ]);
     const teamUsed = { dials: team.dials, talkSec: team.talkSec, sms: smsRes.sms, emails: team.emails };
     const mineUsed = { dials: mine.dials, talkSec: mine.talkSec, sms: null, emails: mine.emails };
+    const users = {};
+    ALLOWED_USERS.forEach((u, i) => {
+      const c = userCounters[i] || { dials: 0, talkSec: 0, emails: 0 };
+      users[u] = { dials: c.dials, talkSec: c.talkSec, sms: null, emails: c.emails };
+    });
     return json({
       ok: true,
       date,
@@ -592,6 +613,7 @@ async function handleApi(request, env) {
       used: teamUsed, // team totals (back-compat with the first caps shape)
       team: teamUsed,
       mine: mineUsed,
+      users,
       smsNote: smsRes.note,
       receptionistMinutes: recep.minutes,
       receptionistCostEst: recep.costEst,
@@ -740,6 +762,13 @@ async function handleApi(request, env) {
   if (path === "/api/state" && request.method === "POST") {
     const body = await request.json().catch(() => ({}));
     const s = await getState(env);
+    // Defensive init (2026-11-21): states saved before the new keys
+    // existed get them as empty arrays instead of crashing on .push.
+    if (!Array.isArray(s.assignments)) s.assignments = [];
+    if (!Array.isArray(s.announcements)) s.announcements = [];
+    if (!Array.isArray(s.emailTemplates)) s.emailTemplates = [];
+    if (!Array.isArray(s.emailLog)) s.emailLog = [];
+    if (!s.teamChat || !Array.isArray(s.teamChat.messages)) s.teamChat = { messages: [] };
     const now = new Date();
     const date = now.toLocaleDateString("en-US", { month: "short", day: "numeric", year: "numeric" });
     const time = now.toLocaleTimeString("en-US", { hour: "numeric", minute: "2-digit" });
@@ -803,6 +832,184 @@ async function handleApi(request, env) {
       if (!conv) { conv = { leadId: body.leadId, leadName: lMsg ? lMsg.business : "", messages: [] }; s.conversations.push(conv); }
       if (!conv.leadName && lMsg) conv.leadName = lMsg.business;
       conv.messages.push({ id: "msg-" + crypto.randomUUID().slice(0, 8), from: body.from === "lead" ? "lead" : "me", text: String(body.text || "").slice(0, 2000), date, time });
+    } else if (op === "sendTeamMessage") {
+      // Pinned "SFB SALES TEAM" group chat (2026-11-21): one shared thread
+      // in state.teamChat. Session-checked (only the three team accounts
+      // reach this op at all). Empty text is refused; messages are capped
+      // at 2000 chars like lead messages. No seeding, no fake history.
+      const text = String(body.text || "").trim().slice(0, 2000);
+      if (!text) return err("Type a message first.");
+      if (!s.teamChat || !Array.isArray(s.teamChat.messages)) s.teamChat = { messages: [] };
+      s.teamChat.messages.push({ id: "tm-" + crypto.randomUUID().slice(0, 8), by: username, text, date, time });
+    } else if (op === "addAssignment") {
+      if (username !== "romanroyce") return err("Only the owner can create assignments.", 403);
+      const title = String(body.title || "").trim().slice(0, 120);
+      if (!title) return err("Enter an assignment title.", 400);
+      const assignee = String(body.assignee || "");
+      if (!ALLOWED_USERS.includes(assignee)) return err("Assignee must be a team member.", 400);
+      const dueDate = String(body.dueDate || "");
+      if (dueDate !== "" && !/^\d{4}-\d{2}-\d{2}$/.test(dueDate)) return err("Due date must be YYYY-MM-DD.", 400);
+      s.assignments.push({ id: "asg-" + crypto.randomUUID().slice(0, 8), title, details: String(body.details || "").slice(0, 500), assignee, assignedBy: username, dueDate: dueDate || "", status: "todo", createdAt: date + " " + time, completedAt: null });
+    } else if (op === "updateAssignment") {
+      if (username !== "romanroyce") return err("Only the owner can edit assignments.", 403);
+      const a = s.assignments.find((x) => x.id === body.id);
+      if (!a) return err("Assignment not found.", 400);
+      if (body.title !== undefined) {
+        const title = String(body.title || "").trim().slice(0, 120);
+        if (!title) return err("Enter an assignment title.", 400);
+        a.title = title;
+      }
+      if (body.details !== undefined) a.details = String(body.details || "").slice(0, 500);
+      if (body.assignee !== undefined) {
+        const assignee = String(body.assignee || "");
+        if (!ALLOWED_USERS.includes(assignee)) return err("Assignee must be a team member.", 400);
+        a.assignee = assignee;
+      }
+      if (body.dueDate !== undefined) {
+        const dueDate = String(body.dueDate || "");
+        if (dueDate !== "" && !/^\d{4}-\d{2}-\d{2}$/.test(dueDate)) return err("Due date must be YYYY-MM-DD.", 400);
+        a.dueDate = dueDate || "";
+      }
+    } else if (op === "setAssignmentStatus") {
+      const a = s.assignments.find((x) => x.id === body.id);
+      if (!a) return err("Assignment not found.", 400);
+      if (username !== "romanroyce" && username !== a.assignee) return err("Only the owner or the assignee can change this assignment.", 403);
+      if (!["todo", "doing", "done"].includes(body.status)) return err("Status must be todo, doing, or done.", 400);
+      a.status = body.status;
+      a.completedAt = body.status === "done" ? date + " " + time : null;
+    } else if (op === "deleteAssignment") {
+      if (username !== "romanroyce") return err("Only the owner can delete assignments.", 403);
+      if (body.confirmed !== true) return err("Delete not confirmed — send confirmed:true.", 400);
+      s.assignments = s.assignments.filter((x) => x.id !== body.id);
+    } else if (op === "addAnnouncement") {
+      if (username !== "romanroyce") return err("Only the owner can post announcements.", 403);
+      const title = String(body.title || "").trim();
+      if (!title) return err("Enter an announcement title.", 400);
+      if (title.length > 120) return err("Title must be 120 characters or fewer.", 400);
+      const annBody = String(body.body || "").trim();
+      if (!annBody) return err("Enter an announcement body.", 400);
+      if (annBody.length > 2000) return err("Announcement must be 2000 characters or fewer.", 400);
+      s.announcements.push({ id: "ann-" + crypto.randomUUID().slice(0, 8), title, body: annBody, author: username, pinned: body.pinned === true, createdAt: date + " " + time });
+    } else if (op === "setAnnouncementPin") {
+      if (username !== "romanroyce") return err("Only the owner can pin announcements.", 403);
+      const a = s.announcements.find((x) => x.id === body.id);
+      if (!a) return err("Announcement not found.", 400);
+      a.pinned = body.pinned === true;
+    } else if (op === "deleteAnnouncement") {
+      if (username !== "romanroyce") return err("Only the owner can delete announcements.", 403);
+      if (body.confirmed !== true) return err("Delete not confirmed — send confirmed:true.", 400);
+      s.announcements = s.announcements.filter((x) => x.id !== body.id);
+    } else if (op === "saveEmailTemplate") {
+      if (username !== "romanroyce") return err("Only the owner can save email templates.", 403);
+      const name = String(body.name || "").trim();
+      if (!name) return err("Enter a template name.", 400);
+      if (name.length > 80) return err("Template name must be 80 characters or fewer.", 400);
+      const subject = String(body.subject || "").trim();
+      if (!subject) return err("Enter an email subject.", 400);
+      if (subject.length > 200) return err("Subject must be 200 characters or fewer.", 400);
+      const tplBody = String(body.body || "").trim();
+      if (!tplBody) return err("Enter an email body.", 400);
+      if (tplBody.length > 5000) return err("Email body must be 5000 characters or fewer.", 400);
+      s.emailTemplates.push({ id: "tpl-" + crypto.randomUUID().slice(0, 8), name, subject, body: tplBody, createdBy: username, createdAt: date + " " + time });
+    } else if (op === "updateEmailTemplate") {
+      if (username !== "romanroyce") return err("Only the owner can edit email templates.", 403);
+      const t = s.emailTemplates.find((x) => x.id === body.id);
+      if (!t) return err("Email template not found.", 400);
+      if (body.name !== undefined) {
+        const name = String(body.name || "").trim();
+        if (!name) return err("Enter a template name.", 400);
+        if (name.length > 80) return err("Template name must be 80 characters or fewer.", 400);
+        t.name = name;
+      }
+      if (body.subject !== undefined) {
+        const subject = String(body.subject || "").trim();
+        if (!subject) return err("Enter an email subject.", 400);
+        if (subject.length > 200) return err("Subject must be 200 characters or fewer.", 400);
+        t.subject = subject;
+      }
+      if (body.body !== undefined) {
+        const tplBody = String(body.body || "").trim();
+        if (!tplBody) return err("Enter an email body.", 400);
+        if (tplBody.length > 5000) return err("Email body must be 5000 characters or fewer.", 400);
+        t.body = tplBody;
+      }
+    } else if (op === "deleteEmailTemplate") {
+      if (username !== "romanroyce") return err("Only the owner can delete email templates.", 403);
+      if (body.confirmed !== true) return err("Delete not confirmed — send confirmed:true.", 400);
+      s.emailTemplates = s.emailTemplates.filter((x) => x.id !== body.id);
+    } else if (op === "sendEmail") {
+      // (a) Validate lead + fields before touching caps or Resend.
+      const lead = (s.leads || []).find((x) => x.id === body.leadId);
+      if (!lead) return err("Lead not found.", 400);
+      const to = String(body.to || "").trim();
+      if (!/^\S+@\S+\.\S+$/.test(to)) return err("Enter a valid email address.", 400);
+      const emailSubject = String(body.subject || "");
+      if (!emailSubject.trim() || emailSubject.length > 200) return err("Enter a subject of 200 characters or fewer.", 400);
+      const emailBody = String(body.body || "");
+      if (!emailBody.trim() || emailBody.length > 10000) return err("Enter a body of 10000 characters or fewer.", 400);
+      const logBase = { id: "eml-" + crypto.randomUUID().slice(0, 8), leadId: body.leadId, leadName: lead.business, to, subject: emailSubject, by: username, date, time };
+      // (b) Caps — same reason strings as POST /api/caps/email.
+      // NOTE: caps keys use the ET YYYY-MM-DD date (etDateStr), not the
+      // display date ("Nov 21, 2026") used in state records.
+      const capsDate = etDateStr();
+      const limits = await getCapsLimits(env);
+      const team = await getCapsCounters(env, capsDate);
+      const mine = await getCapsCounters(env, capsDate, username);
+      const tLim = limits.team;
+      const uLim = limits.users[username] || limits.users.romanroyce;
+      let blockedReason = "";
+      if (team.emails >= tLim.emails) blockedReason = "Team daily limit reached — " + team.emails + "/" + tLim.emails + " emails. Resets midnight ET.";
+      else if (mine.emails >= uLim.emails) blockedReason = "Your daily limit reached — " + mine.emails + "/" + uLim.emails + " emails. Resets midnight ET.";
+      if (blockedReason) {
+        s.emailLog.push({ ...logBase, status: "blocked", error: blockedReason });
+        await saveState(env, s);
+        return err(blockedReason, 403);
+      }
+      // (c) Resend not wired — log + 503, never attempt a fetch.
+      if (!env.RESEND_API_KEY) {
+        const msg = "Email is not connected yet — the Resend key still needs to be connected.";
+        s.emailLog.push({ ...logBase, status: "blocked", error: msg });
+        await saveState(env, s);
+        return err(msg, 503);
+      }
+      // (d) Send via Resend. globalThis.fetch so the harness can stub it.
+      const escHtml = (t) => String(t || "").replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;").replace(/"/g, "&quot;");
+      let res = null;
+      let resData = null;
+      let netErr = "";
+      try {
+        res = await globalThis.fetch("https://api.resend.com/emails", {
+          method: "POST",
+          headers: { Authorization: "Bearer " + env.RESEND_API_KEY, "Content-Type": "application/json" },
+          body: JSON.stringify({ from: "Roman Royce <roman@sixfigureblueprintsllc.com>", to: [to], subject: emailSubject, text: emailBody, html: escHtml(emailBody).replace(/\n/g, "<br>") }),
+        });
+        resData = await res.json().catch(() => null);
+      } catch (e) {
+        netErr = (e && e.message) || "Network error";
+      }
+      // (e) 2xx: count the email, log sent, mark queued email follow-ups.
+      if (res && res.ok) {
+        const resendId = (resData && resData.id) ? String(resData.id) : "";
+        team.emails += 1;
+        mine.emails += 1;
+        await saveCapsCounters(env, capsDate, null, team);
+        await saveCapsCounters(env, capsDate, username, mine);
+        s.emailLog.push({ ...logBase, status: "sent", resendId });
+        for (const fu of (s.followUps || [])) {
+          if (fu.leadId === body.leadId && fu.kind === "email" && fu.status === "queued") fu.status = "sent";
+        }
+      } else {
+        // (f) Non-2xx or network error: log failed, 502, caps untouched.
+        let errorText = "";
+        if (res && resData && resData.error && resData.error.message) errorText = String(resData.error.message);
+        else if (res && resData && resData.message) errorText = String(resData.message);
+        else if (res) errorText = "Resend error (HTTP " + res.status + ")";
+        else errorText = netErr || "Network error";
+        errorText = errorText.slice(0, 300);
+        s.emailLog.push({ ...logBase, status: "failed", error: errorText });
+        await saveState(env, s);
+        return err("Email failed — " + errorText, 502);
+      }
     } else {
       return err("Unknown operation.");
     }
@@ -815,8 +1022,13 @@ async function handleApi(request, env) {
 export default {
   async fetch(request, env) {
     const incoming = new URL(request.url);
-    const isApi = incoming.pathname === "/ripmode/api" || incoming.pathname.startsWith("/ripmode/api/") ||
-      incoming.pathname === "/api" || incoming.pathname.startsWith("/api/");
+    // Prefix-aware (2026-11-21): the app lives at /ripmode AND /salesteam.
+    // NO redirect — /salesteam routes do not exist on the zone yet, so a
+    // redirect would 404. Both prefixes serve identically.
+    const p = incoming.pathname;
+    const isApi = p === "/ripmode/api" || p.startsWith("/ripmode/api/") ||
+      p === "/salesteam/api" || p.startsWith("/salesteam/api/") ||
+      p === "/api" || p.startsWith("/api/");
     if (isApi) return handleApi(request, env);
 
     // Proxy everything else to the Vercel app (same pattern as sfb-billme-router).

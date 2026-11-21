@@ -1082,3 +1082,163 @@ router.js and the regenerated worker/standalone.js (v=18). Live KV
 backed up before any work (state-backup-20261121T081940Z.json: 46
 leads, 0 callLogs, dials 4 / connected 1) and untouched by this change
 — the harness ran against an in-memory KV, never live state.
+
+## v19 mega-build (2026-11-21) — Calendar picker + /salesteam code-ready + iPad Call Log + Analytics filter & leaderboard + RIP cleanup & iPhone dialer + Assignments/Announcements/Today + Email tab + login fixes + role-gated account menu
+
+One deploy (asset v=19), all verified by /tmp/mega-harness.mjs 150/150
+against the real worker/standalone.js + real app.js (in-memory KV, mocked
+Resend) before deploy. Live KV untouched (46 leads, 0 callLogs, dials 4 /
+connected 1 — backed up state-backup-20261121T104451Z.json before the deploy
+and state-backup-20261121T104928Z.json after; identical counts).
+
+CALENDAR — "Book for lead" is now a searchable picker (type to filter by
+business, city, owner, phone incl. digits-only; arrow keys + Enter, Escape
+restores, click-outside closes, "No leads match" empty state, ✓ on the
+selected lead; works at 0 and 500 leads). Six event types in Rome's order,
+all real Cal.com links: 15 min, 30 min, 1 hr (id 8013117), Discovery Call,
+Secret Meeting, Client Call (id 8013118) — "1 hr" and "Client Call" were
+created on Cal.com via the API on 2026-11-21; Bingled is gone from the
+picker. Selected day gets a highlighted border outline, other days dim/blur;
+time slots moved to a right side panel next to the month grid (stacks below
+on narrow screens). Mine/Everyone toggle filters the booked-meetings list
+AND the booked-day dots (Mine = booked by the signed-in user; server stores
+by: username on every bookMeeting). Booking payload unchanged
+(bookMeeting {leadId, date, time, typeName}); "Book on Cal.com" opens the
+selected type's real link.
+
+/SALESTEAM — CODE-READY ONLY, NO REDIRECT. The worker serves the whole app
+(page, assets, ALL API routes incl. /api/billme/sync) under BOTH /ripmode/*
+and /salesteam/* with identical behavior; served asset URLs use the prefix
+the request came in on; sessions/caps work across both prefixes. NO
+redirect was added — the Cloudflare routes for /salesteam do not exist yet
+(parent adds them via the dashboard UI; the API token cannot create
+routes). Live sixfigureblueprints.com/salesteam still 404s until then;
+/ripmode works exactly as before. BillMe bridge still posts to
+/ripmode/api/billme/sync — unchanged.
+
+CALL LOG — mock iPad (not iPhone): iPad proportions/bezel, camera dot in
+the top bezel, no Dynamic Island; Messages in real iPad layout, list LEFT,
+thread RIGHT side by side; tapping a lead opens its thread on the right.
+Pinned "SFB SALES TEAM" row first (visually distinct, stays first during
+search). The group chat is REAL and shared: one thread in KV
+(state.teamChat.messages), readable/writable by all three team accounts,
+server-enforced via the session check; starts EMPTY ("No messages yet —
+say hi to the team"), never seeded. Sending uses the same iMessage input
+bar; each message shows the sender's name. Lead threads unchanged
+(blue/grey bubbles, calls as centred grey system rows). The iPhone CSS
+block stays in the stylesheets — the RIP MODE dialer reuses it.
+
+ANALYTICS — scope filter (segmented Company / Personal + member picker;
+stat cards, charts, per-lead/per-rep tables follow it; Daily Limits card
+does NOT — it stays you + team). Receptionist numbers stay team-wide with
+the note "Receptionist calls are team-wide — no per-person attribution"
+under a personal/member scope. LEADERBOARD at the top, always the full
+team (ignores the scope filter, noted in one line): ranked by meetings
+booked, tiebreak connected, then dials, for the selected range
+(Today / Last 7 days / All time); rows show rank, name, dials, connected,
+connect rate, meetings, talk minutes + progress bar. Talk minutes come
+from the per-user caps counters (GET /api/caps now returns a `users` map),
+so they show for Today only — 7d/All time show "—" with the note "Talk
+minutes are tracked daily — shown for Today only." Zero-activity reps
+show with zeros, never hidden.
+
+AI REP — honest SMS status (display only; call records unchanged).
+bookingLinkSms/sms {status, error?} render as: delivered → "Booking link
+delivered"; sent-unconfirmed → "Booking link sent — delivery not
+confirmed"; failed → "Booking link not delivered (reason)"; not-sent →
+"Booking link not sent (reason)" or nothing. An old record with only
+bookingLinkSent: true and no status field renders as "sent — delivery not
+confirmed", NEVER "delivered". Same honesty on the owner-summary SMS line.
+Outcome map gained "message" → "Message" (receptionist v1.5.0 renamed
+message-taken → message); "message-taken" kept for old records.
+
+RIP MODE — density + cleanup (tab only). Daily Limits is a compact strip
+(all 8 numbers + progress bars + short notes). Business name/phone no
+longer duplicated as full-size headings (lead card keeps details; dialer
+keeps the phone big). Long paragraphs collapsed to one-line hints
+("Confirm books the meeting; email queued (Resend pending), SMS via
+Google Voice." / "Same Twilio path from +1 239 349 9491. Number never
+saved."). Session Data is a slim 6-cell strip. Outcomes are one tight
+section. No dead space; CALL stays the loudest control. DIALER IS NOW AN
+iPHONE: the whole call UI (company, Ready to dial, phone, mic level,
+READY, MUTE/KEYPAD/SCRIPT/DROP VM, CALL, TEXT, call states, 3:00 warning,
+3:45 auto-end, cap disabled state) sits inside a compact CSS iPhone frame
+(Dynamic Island, status bar); the owner-only TEST CALL box stays OUTSIDE
+the phone as a slim card below it, behavior identical. Every function is
+identical — only size, spacing, duplication and dead space changed.
+
+NEW TABS (after Analytics, before Connections) — Assignments,
+Announcements, Today's Tasks. KV state gains assignments, announcements,
+emailTemplates, emailLog (seeded empty, never wiped). Assignments: owner
+creates (title, details, assignee picker, due date, default todo); list
+shows assignee + avatar initials, due date (overdue in red), status;
+assignee-or-owner moves todo → doing → done (and back); done shows
+completed date; delete uses the same confirm safeguard (server requires
+confirmed:true, removes only the assignment). Staff see the team list but
+can only change the status of their own assignments; create/edit/reassign/
+delete are owner-only 403s server-side. Filters All / Mine / by assignee /
+by status; sort overdue first, then due soonest. Announcements: owner
+posts (title + body, optional pin); pinned first, newest first; author +
+date shown; owner delete with confirm; staff read-only. Today's Tasks:
+signed-in user's assignments due TODAY + OVERDUE, checkboxes mark done
+(same status rules); Mine/Team toggle (team grouped by person); progress
+line ("N of M done today"); honest empty state "Nothing due today"; a done
+task leaves Today's Tasks and shows completed in Assignments. All three
+start EMPTY. Dates America/New_York.
+
+EMAIL TAB (after Call Log, before AI Rep) — compose with the same
+searchable lead picker (name/city/owner/phone/email), To, template
+dropdown, subject, body, Send. Templates are the SOP §7 copy VERBATIM
+(E1 Meeting booked confirmation, E2 No-answer, E3 Voicemail, E4 Send VSL,
+E5 Callback request; from roman@sixfigureblueprintsllc.com; merge [Name],
+[Business], [Link] = https://cal.com/roman-royce/30min, [Date/Time];
+[VSL link] in E4 is an editable placeholder — sends are refused while it
+is still in the body). Owner can save custom templates in KV (owner-only
+create/edit/delete, 403 for staff); staff can use any template and send
+within their own cap. Sent log in KV records every attempt (to, lead,
+subject, sent-by, when, status sent/failed/blocked + error). CONNECTION
+STATE IS HONEST: the worker reads the Resend key ONLY from env var
+RESEND_API_KEY (GET /api/email/status returns {connected} and never the
+key). Key absent → "Email is not connected yet" banner, Send DISABLED, no
+send attempted or recorded as sent. Key present → sends via Resend from
+sixfigureblueprintsllc.com, caps counted (team 100/day, per person 33/day,
+same "which limit" wording as dials). **RESEND_API_KEY is ABSENT on the
+live worker (verified 2026-11-21 via the Cloudflare API)** — the
+auto-dialer key still needs connecting; the Muse connector submission is
+still blocked by a Chrome extension in Rome's Chrome (agent.meta.ai
+blocked). The RIP MODE MEETING BOOKED button now uses this same send path
+(E1 merged with lead + booked date/time; same caps, same honest blocked
+state) — no separate fake path remains.
+
+LOGIN — full-screen from the real styles (style.css's superseded v2
+centred-card block replaced with #login-screen-scoped v3 rules; inline
+critical CSS and both stylesheets now agree; 100vw × 100vh, no floating
+card). Four texts removed from every served file: the first-time-passcode
+hint, the no-email-reset hint, the only-three-users hint, and the stale
+Google Voice footer. Username placeholder is exactly "username". Every
+failed sign-in (unknown username, wrong passcode, non-team sign-up) shows
+exactly "Wrong username or password" (401) — the old "That username is
+not on the team…" alert is gone from all served files. Format checks kept:
+email in Username → "Use your username, not your email…"; malformed
+passcode → "Enter a 4-digit passcode."; mismatch → "Passcodes do not
+match…". Behavior unchanged: username + 4-digit passcode, first sign-in
+sets it, Enter submits, 30-day sessions.
+
+ACCOUNT MENU — role-gated by the session's role. Owner (romanroyce):
+full menu exactly as before. Staff (loganwells, braylengarrett): ONLY the
+workspace they are in ("Six Figure Blueprints" as a label, NOT a
+switcher), Settings (small read-only panel: display name, username, role,
+workspace — no admin controls), Logout. Server enforcement audited: POST
+/api/caps/limits and POST /api/airep/config were already owner-only 403;
+NO workspace/create-workspace/switch-workspace/manage-users endpoints
+exist in the worker (the menu items are client-side stubs); the new
+owner-only ops (assignments, announcements, email templates) all enforce
+owner-only 403. Sidebar workspace display and the "1 business" card are
+unchanged for everyone.
+
+DEPLOY: fixed deploy.py only. All 7 bindings verified present before and
+after (RIPMODE_KV, RECEPTIONIST_KEY, TWILIO_ACCOUNT_SID,
+TWILIO_API_KEY_SID, TWILIO_API_KEY_SECRET, TWILIO_TWIML_APP_SID,
+BILLME_SYNC_SECRET). Live https://sixfigureblueprints.com/ripmode 200 with
+served app.js/style.css byte-identical to local (v=19). Zero occurrences
+of Rome's personal forwarding number in served files.
