@@ -609,6 +609,7 @@ const TAB_META = {
   calendar: ["Calendar", "Cal.com — pick an event type, a day, and a time. Booking opens your real Cal.com link: https://cal.com/roman-royce/30min"],
   calllog: ["Call Log", "Every call, mirrored as a conversation. Tap a lead to open its chat thread."],
   airep: ["AI Rep", "See every call the AI receptionist takes — and change what callers hear on the next call."],
+  analytics: ["Analytics", "Real numbers from the dialer and the receptionist — nothing invented."],
   connections: ["Connections", "Honest status — nothing here is marked connected unless it was verified."],
 };
 function updateNav() {
@@ -629,6 +630,7 @@ function onNavigate(next) {
   window.scrollTo(0, 0);
   updateNav();
   if (next === "airep") loadAiRep(); // loads status + calls + config, then re-renders
+  if (next === "analytics") loadAnalytics(); // reloads state + receptionist calls, then re-renders
   render();
 }
 function setMenuOpen(open) {
@@ -738,6 +740,7 @@ function render() {
   else if (currentTab === "calendar") body = renderCalendar();
   else if (currentTab === "calllog") body = renderCallLog();
   else if (currentTab === "airep") body = renderAiRep();
+  else if (currentTab === "analytics") body = renderAnalytics();
   else if (currentTab === "connections") body = renderConnections();
   main.innerHTML = `<div class="page-heading"><div><span class="eyebrow">YOUR WORKSPACE</span><h1>${esc(meta[0])}</h1>${sub ? `<p>${esc(sub)}</p>` : ""}</div></div>` + body;
   bindTab();
@@ -1437,6 +1440,227 @@ function bindAiRep() {
   };
 }
 
+/* ---------- ANALYTICS ----------
+   Real numbers only — every figure is computed from the stored dialer
+   state (leads, callLogs) and the receptionist call log (via the AI Rep
+   proxy). Nothing is invented, nothing is seeded.
+   Talk minutes are NOT recorded by the dialer, so outbound talk cost
+   cannot be totalled — it says so instead of guessing. */
+const ANALYTICS_RANGES = [["today", "Today"], ["7d", "Last 7 days"], ["all", "All time"]];
+const OUTBOUND_COST_PER_MIN = 0.018; // Twilio outbound $0.014 + browser leg $0.004 — estimate only
+const RECEP_COST_PER_MIN = 0.0785;   // ConversationRelay $0.07 + inbound voice $0.0085 — estimate only
+const BALANCE_NOTE = "Twilio balance last confirmed $20.00 on Nov 20, 2026 — this is not a live balance.";
+// Outcomes that mean a human picked up (a conversation happened). A manual
+// disposition under "Conversation" (not interested / callback / receptionist
+// / VSL) implies the same — the person answered. "meeting_booked" is the
+// booking event for a call that connected.
+const CONNECTED_OUTCOMES = ["connected", "not_interested", "callback", "receptionist", "send_vsl", "meeting_booked"];
+const ANALYTICS_REPS = [
+  {username: "romanroyce", name: "Roman Royce"},
+  {username: "loganwells", name: "Logan Wells"},
+  {username: "braylengarrett", name: "Braylen Garrett"},
+];
+let analyticsRange = "7d";
+let analyticsRepCalls = [], analyticsRepError = "", analyticsError = "";
+let analyticsLoading = false, analyticsLoaded = false;
+
+// Parse a stored date string ("Nov 20, 2026" from the server, or the
+// calendar's year-less "Friday, November 20") + optional "2:30 PM" time.
+// Date.parse guesses the WRONG year (2001) for year-less dates, so those
+// are parsed by hand with the current year. Returns a Date or null.
+function parseStoredDate(dateStr, timeStr) {
+  const s = String(dateStr || "").trim();
+  if (!s) return null;
+  const v = Date.parse(s + (timeStr ? " " + String(timeStr) : ""));
+  if (!isNaN(v)) {
+    const d = new Date(v);
+    if (d.getFullYear() >= 2026) return d; // the dialer started Nov 2026
+  }
+  const m = s.match(/(January|February|March|April|May|June|July|August|September|October|November|December|Jan|Feb|Mar|Apr|Jun|Jul|Aug|Sep|Sept|Oct|Nov|Dec)\.?\s+(\d{1,2})/i);
+  if (m) {
+    const months = {january: 0, jan: 0, february: 1, feb: 1, march: 2, mar: 2, april: 3, apr: 3, may: 4, june: 5, jun: 5, july: 6, jul: 6, august: 7, aug: 7, september: 8, sep: 8, sept: 8, october: 9, oct: 9, november: 10, nov: 10, december: 11, dec: 11};
+    const d = new Date(new Date().getFullYear(), months[m[1].toLowerCase()], Number(m[2]));
+    const tm = String(timeStr || "").match(/(\d{1,2}):(\d{2})\s*([AP]M)/i);
+    if (tm) { let h = Number(tm[1]) % 12; if (/pm/i.test(tm[3])) h += 12; d.setHours(h, Number(tm[2]), 0, 0); }
+    return d;
+  }
+  return null;
+}
+function dayKeyOf(d) { return d.getFullYear() + "-" + (d.getMonth() + 1) + "-" + d.getDate(); }
+function startOfDay(d) { const x = new Date(d); x.setHours(0, 0, 0, 0); return x; }
+function dayLabelOf(d) { return d.toLocaleDateString("en-US", {weekday: "short", month: "short", day: "numeric"}); }
+
+// Pure: every Analytics number from stored state + receptionist calls.
+// range: "today" | "7d" | "all". nowMs lets tests pin "today".
+// Meetings are counted from the meeting_booked call-log entries (the
+// booking event, server-dated) — the calendar's scheduled dates have no
+// year, so they cannot be ranged reliably. Entries with unparseable
+// dates are excluded (the server always writes "Nov 20, 2026", so this
+// should not happen in practice).
+function computeAnalytics(st, repCalls, range, nowMs) {
+  const now = new Date(nowMs || Date.now());
+  const todayStart = startOfDay(now);
+  const tomorrowStart = new Date(todayStart); tomorrowStart.setDate(tomorrowStart.getDate() + 1);
+  const rangeStart = range === "today" ? todayStart
+    : range === "7d" ? new Date(todayStart.getTime() - 6 * 24 * 60 * 60 * 1000)
+    : new Date(0);
+  const inRange = (d) => !!d && d >= rangeStart && d < tomorrowStart;
+  const calls = (st.callLogs || []).map((c) => ({...c, at: parseStoredDate(c.date, c.time)})).filter((c) => c.at && inRange(c.at));
+  const isConn = (c) => CONNECTED_OUTCOMES.includes(c.outcome);
+  const dials = calls.length;
+  const connected = calls.filter(isConn).length;
+  const noAnswer = calls.filter((c) => c.outcome === "no_answer").length;
+  const voicemail = calls.filter((c) => c.outcome === "voicemail").length;
+  const busy = calls.filter((c) => c.outcome === "busy").length;
+  const meetings = calls.filter((c) => c.outcome === "meeting_booked").length;
+  const connectRate = dials ? Math.round((connected / dials) * 1000) / 10 : null;
+  const meetingRate = connected ? Math.round((meetings / connected) * 1000) / 10 : null;
+  // Dials per hour today: dials logged today over hours since midnight
+  // (at least 15 minutes, so one early dial does not read as 60/hour).
+  const todayCalls = (st.callLogs || []).map((c) => ({...c, at: parseStoredDate(c.date, c.time)})).filter((c) => c.at && dayKeyOf(c.at) === dayKeyOf(now));
+  const hoursToday = Math.max(0.25, (now - todayStart) / 3600000);
+  const dialsPerHour = todayCalls.length ? Math.round((todayCalls.length / hoursToday) * 10) / 10 : null;
+  // Per-day buckets: today (1), 7d (7), all (every day with data, most recent 14).
+  let days = [];
+  if (range === "today") days = [todayStart];
+  else if (range === "7d") { for (let i = 6; i >= 0; i--) { const d = new Date(todayStart); d.setDate(d.getDate() - i); days.push(d); } }
+  else {
+    const keys = {};
+    (st.callLogs || []).forEach((c) => { const d = parseStoredDate(c.date, c.time); if (d) keys[dayKeyOf(d)] = startOfDay(d); });
+    days = Object.values(keys).sort((a, b) => a - b).slice(-14);
+    if (!days.length) days = [todayStart];
+  }
+  const perDay = days.map((d) => {
+    const k = dayKeyOf(d);
+    const dc = calls.filter((c) => dayKeyOf(c.at) === k);
+    return {key: k, label: dayLabelOf(d), dials: dc.length, connected: dc.filter(isConn).length, meetings: dc.filter((c) => c.outcome === "meeting_booked").length};
+  });
+  // Outcome breakdown (in range), most common first.
+  const outCounts = {};
+  calls.forEach((c) => { outCounts[c.outcome] = (outCounts[c.outcome] || 0) + 1; });
+  const outcomes = Object.keys(outCounts).map((o) => ({outcome: o, label: callLabel(o), count: outCounts[o], pct: dials ? Math.round((outCounts[o] / dials) * 1000) / 10 : 0})).sort((a, b) => b.count - a.count);
+  // Per lead (in range), most dialled first.
+  const perLead = (st.leads || []).map((l) => {
+    const lc = calls.filter((c) => c.leadId === l.id);
+    const sorted = [...lc].sort((a, b) => a.at - b.at);
+    const last = sorted[sorted.length - 1];
+    return {id: l.id, business: l.business, dials: lc.length, connected: lc.filter(isConn).length, lastOutcome: last ? callLabel(last.outcome) : null, meetings: lc.filter((c) => c.outcome === "meeting_booked").length};
+  }).sort((a, b) => b.dials - a.dials || (a.business < b.business ? -1 : 1));
+  // Per rep (in range) — all three, zeros and all.
+  const perRep = ANALYTICS_REPS.map((r) => {
+    const rc = calls.filter((c) => c.by === r.username);
+    return {username: r.username, name: r.name, dials: rc.length, connected: rc.filter(isConn).length, meetings: rc.filter((c) => c.outcome === "meeting_booked").length};
+  });
+  // Receptionist (in range). Minutes come from durationSec; calls without
+  // one (missed / hung up before the relay) count as 0 minutes and are
+  // flagged, not guessed.
+  const reps = (repCalls || []).map((c) => ({...c, at: c.startedAt ? new Date(c.startedAt) : null})).filter((c) => c.at && !isNaN(c.at) && inRange(c.at));
+  const repMinutes = Math.round((reps.reduce((a, c) => a + (Number(c.durationSec) || 0), 0) / 60) * 10) / 10;
+  const repMissingDuration = reps.filter((c) => !(Number(c.durationSec) > 0)).length;
+  const repCost = Math.round(repMinutes * RECEP_COST_PER_MIN * 100) / 100;
+  const repOutCounts = {};
+  reps.forEach((c) => { const [label] = aiRepOutcome(c); repOutCounts[label] = (repOutCounts[label] || 0) + 1; });
+  const repOutcomes = Object.keys(repOutCounts).map((label) => ({label, count: repOutCounts[label]})).sort((a, b) => b.count - a.count);
+  const repRecent = [...reps].sort((a, b) => b.at - a.at).slice(0, 5);
+  return {
+    range, rangeLabel: (ANALYTICS_RANGES.find((r) => r[0] === range) || ["", ""])[1],
+    dials, connected, noAnswer, voicemail, busy, meetings,
+    connectRate, meetingRate, dialsPerHour, todayDials: todayCalls.length,
+    perDay, outcomes, perLead, perRep,
+    repTotal: reps.length, repMinutes, repCost, repMissingDuration, repOutcomes, repRecent,
+    empty: dials === 0 && reps.length === 0,
+  };
+}
+
+function anBarRow(label, value, max, sub) {
+  const pct = max > 0 ? Math.round((value / max) * 100) : 0;
+  return `<div class="an-bar-row"><span class="an-bar-label">${esc(label)}</span><span class="an-bar-track"><span class="an-bar-fill" style="width:${pct}%"></span></span><span class="an-bar-val">${esc(String(value))}${sub ? ` <span class="an-bar-sub">${esc(sub)}</span>` : ""}</span></div>`;
+}
+
+function renderAnalytics() {
+  if (!analyticsLoaded) {
+    return `<div class="card"><div class="notice">Loading analytics…</div><button class="btn" id="an-refresh">Refresh</button></div>`;
+  }
+  const a = computeAnalytics(state, analyticsRepCalls, analyticsRange);
+  const rangeBtns = ANALYTICS_RANGES.map(([v, label]) => `<button class="btn ${analyticsRange === v ? "btn--primary" : ""}" data-anrange="${v}" aria-pressed="${analyticsRange === v}">${label}</button>`).join("");
+  const pct = (v) => (v === null ? "—" : v + "%");
+  const empty = a.empty ? `<div class="card"><div class="notice">No calls yet — dial a lead in RIP MODE or wait for an inbound call. These numbers fill in from real calls only; nothing here is seeded or estimated.</div></div>` : "";
+  return `
+  <div class="an-range">${rangeBtns}<button class="btn" id="an-refresh">Refresh</button></div>
+  ${analyticsError ? `<div class="card"><div class="error">${esc(analyticsError)}</div></div>` : ""}
+  ${analyticsRepError ? `<div class="card"><div class="notice">Receptionist calls could not be loaded — ${esc(analyticsRepError)} The outbound numbers below are still real.</div></div>` : ""}
+  ${empty}
+  <div class="card">
+    <div class="section-title" style="margin-top:0">Outbound — ${esc(a.rangeLabel)}</div>
+    <div class="stat-boxes">
+      <div class="stat-box"><div class="num">${a.dials}</div><div class="lbl">Dials</div></div>
+      <div class="stat-box"><div class="num">${a.connected}</div><div class="lbl">Connected</div></div>
+      <div class="stat-box"><div class="num">${pct(a.connectRate)}</div><div class="lbl">Connect rate</div></div>
+      <div class="stat-box"><div class="num">${a.noAnswer}</div><div class="lbl">No answer</div></div>
+      <div class="stat-box"><div class="num">${a.voicemail}</div><div class="lbl">Voicemail</div></div>
+      <div class="stat-box"><div class="num">${a.meetings}</div><div class="lbl">Meetings booked</div></div>
+      <div class="stat-box"><div class="num">${pct(a.meetingRate)}</div><div class="lbl">Meeting conversion</div></div>
+      <div class="stat-box"><div class="num">${a.dialsPerHour === null ? "—" : a.dialsPerHour}</div><div class="lbl">Dials / hour today</div></div>
+      <div class="stat-box"><div class="num">${a.repTotal}</div><div class="lbl">Receptionist calls</div></div>
+    </div>
+    <p class="notice">Dials = logged call events. A call that ends in a booking logs twice — the call and the booking — so Dials can run ahead of calls placed. Connect rate = connected ÷ dials. Meeting conversion = meetings ÷ connected.</p>
+  </div>
+  <div class="card">
+    <div class="section-title" style="margin-top:0">Costs — estimates at the rates shown</div>
+    <div class="kv"><span>Receptionist</span><span>${a.repMinutes} min · ≈ $${a.repCost.toFixed(2)} (est.)</span></div>
+    <div class="kv"><span>Outbound talk</span><span>Not tracked yet — talk minutes aren't recorded (≈ $${OUTBOUND_COST_PER_MIN}/min when tracked)</span></div>
+    <div class="kv"><span>Twilio balance</span><span>${esc(BALANCE_NOTE)}</span></div>
+    ${a.repMissingDuration ? `<p class="notice">${a.repMissingDuration} receptionist call${a.repMissingDuration === 1 ? "" : "s"} in this range have no duration recorded, so the minutes above are a lower bound.</p>` : ""}
+  </div>
+  <div class="card">
+    <div class="section-title" style="margin-top:0">Calls per day — ${a.range === "today" ? "today" : a.range === "7d" ? "last 7 days" : "all time (last 14 days)"}</div>
+    ${a.perDay.map((d) => anBarRow(d.label, d.dials, Math.max(...a.perDay.map((x) => x.dials), 1), d.connected + " connected · " + d.meetings + " mtg")).join("")}
+    <div class="section-title">Outcome breakdown — ${esc(a.rangeLabel)}</div>
+    ${a.outcomes.length ? a.outcomes.map((o) => anBarRow(o.label, o.count, Math.max(...a.outcomes.map((x) => x.count), 1), o.pct + "%")).join("") : `<div class="notice">No outcomes in this range.</div>`}
+    <div class="section-title">Meetings per day</div>
+    ${a.perDay.map((d) => anBarRow(d.label, d.meetings, Math.max(...a.perDay.map((x) => x.meetings), 1), "")).join("")}
+  </div>
+  <div class="card">
+    <div class="section-title" style="margin-top:0">Receptionist outcomes — ${esc(a.rangeLabel)}</div>
+    ${a.repOutcomes.length ? a.repOutcomes.map((o) => anBarRow(o.label, o.count, Math.max(...a.repOutcomes.map((x) => x.count), 1), "")).join("") : `<div class="notice">No receptionist calls in this range.</div>`}
+    ${a.repRecent.length ? `<div class="section-title">Recent receptionist calls</div>` + a.repRecent.map((c) => {
+      const [label, cls] = aiRepOutcome(c);
+      return `<div class="kv"><span><b>${esc(c.from || "Unknown caller")}</b><br><span style="color:var(--muted);font-size:13px">${esc(aiRepWhen(c.startedAt))} · ${esc(c.summary || "No summary yet.")}</span></span><span class="badge ${cls}">${esc(label)}</span></div>`;
+    }).join("") + `<button class="btn" id="an-goto-airep" style="margin-top:12px">See all calls in AI Rep</button>` : ""}
+  </div>
+  <div class="section-title">Per lead — ${esc(a.rangeLabel)}</div>
+  <div class="card"><div class="table-wrap"><table>
+    <thead><tr><th>Lead</th><th>Dials</th><th>Connected</th><th>Last outcome</th><th>Meetings</th></tr></thead>
+    <tbody>${a.perLead.map((l) => `<tr><td><b>${esc(l.business)}</b></td><td>${l.dials}</td><td>${l.connected}</td><td>${esc(l.lastOutcome || "—")}</td><td>${l.meetings}</td></tr>`).join("") || `<tr><td colspan="5">No leads yet.</td></tr>`}</tbody>
+  </table></div></div>
+  <div class="section-title">Per rep — ${esc(a.rangeLabel)}</div>
+  <div class="card"><div class="table-wrap"><table>
+    <thead><tr><th>Rep</th><th>Dials</th><th>Connected</th><th>Meetings</th></tr></thead>
+    <tbody>${a.perRep.map((r) => `<tr><td><b>${esc(r.name)}</b></td><td>${r.dials}</td><td>${r.connected}</td><td>${r.meetings}</td></tr>`).join("")}</tbody>
+  </table></div></div>`;
+}
+
+function bindAnalytics() {
+  document.querySelectorAll("[data-anrange]").forEach((b) => b.onclick = () => { analyticsRange = b.dataset.anrange; render(); });
+  const refresh = $("#an-refresh");
+  if (refresh) refresh.onclick = () => { analyticsLoaded = false; loadAnalytics(); };
+  const go = $("#an-goto-airep");
+  if (go) go.onclick = () => onNavigate("airep");
+}
+
+async function loadAnalytics() {
+  if (analyticsLoading) return;
+  analyticsLoading = true; analyticsError = ""; analyticsRepError = "";
+  try { await loadState(); } catch (e) { analyticsError = e.message || "Could not load the dialer data."; }
+  if (aiRepLoaded) { analyticsRepCalls = aiRepCalls || []; }
+  else {
+    try { const r = await api("/airep/calls", "GET"); analyticsRepCalls = r.calls || []; }
+    catch (e) { analyticsRepError = e.message || "Could not load the receptionist calls."; analyticsRepCalls = []; }
+  }
+  analyticsLoading = false; analyticsLoaded = true;
+  if (currentTab === "analytics") render();
+}
+
 /* ---------- CONNECTIONS ---------- */
 function renderConnections() {
   const rows = [
@@ -1465,6 +1689,7 @@ function bindTab() {
   else if (currentTab === "calendar") bindCalendar();
   else if (currentTab === "calllog") bindCallLog();
   else if (currentTab === "airep") bindAiRep();
+  else if (currentTab === "analytics") bindAnalytics();
 }
 
 /* ---------- login submit: NO <form> (2026-11-20) ----------

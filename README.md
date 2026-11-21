@@ -824,3 +824,83 @@ byte-identical to local, /api/airep/status without a session → 401,
 receptionist /voice still serves the default SFB greeting (no live
 config has been saved yet), /api/config without a key → 403.
 NO NUMBER DIALED. No account touched.
+
+## Analytics tab (2026-11-21, v=15) — real numbers from the dialer + receptionist
+
+New sidebar tab "Analytics" (after AI Rep), same template shell/cards/
+stat-boxes/pills as the other tabs. All three users can view it.
+
+SHOWS (all computed live from the stored dialer state + receptionist
+call log — nothing invented, nothing seeded):
+- Stat cards: total dials, connected, connect rate %, no answer,
+  voicemail, meetings booked, meeting conversion % (meetings ÷
+  connected), dials per hour today, receptionist calls.
+- Costs card: receptionist minutes × ≈ $0.0785/min (estimate, labelled);
+  outbound talk cost — "Not tracked yet" (talk minutes aren't recorded
+  by the dialer, so it cannot be totalled; ≈ $0.018/min when tracked);
+  Twilio balance — "last confirmed $20.00 on Nov 20, 2026 — this is not
+  a live balance" (labelled with the date, never claimed as current).
+- CSS-bar charts (no chart library): calls per day, outcome breakdown,
+  meetings per day, receptionist outcomes (Booked / Message / Question /
+  Missed).
+- Tables: per lead (dials, connected, last outcome, meetings) and per
+  rep (Roman Royce / Logan Wells / Braylen Garrett — zeros shown honestly
+  until a rep calls), plus the 5 most recent receptionist calls with
+  outcome + summary (reuse of the AI Rep proxy) and a button back to AI
+  Rep.
+- Date filter: Today / Last 7 days / All time — actually filters every
+  number on the tab (range buttons re-compute from the loaded state,
+  no refetch needed; Refresh reloads state + receptionist calls).
+
+HONEST RULES, built in:
+- Empty state: "No calls yet — dial a lead in RIP MODE or wait for an
+  inbound call." — shown whenever the selected range has zero outbound
+  and zero receptionist calls.
+- "Dials" follows the app's existing semantics: one logged callLog event
+  counts once. A call that ends in a booking logs twice (the call and
+  the booking), so Dials can run ahead of calls placed — the tab says
+  this in a footnote under the stat cards.
+- "Connected" = an outcome where a human picked up: connected,
+  meeting_booked, not_interested, callback, receptionist, send_vsl
+  (a manual "Conversation" disposition implies the person answered).
+- Meetings are counted from the meeting_booked call-log entries (the
+  booking event, server-dated "Nov 20, 2026"). The calendar's scheduled
+  dates have no year and cannot be ranged reliably, so they are not
+  used for Analytics.
+- Date parsing trap, fixed: Date.parse guesses the WRONG year (2001)
+  for year-less dates like "Friday, November 20", so parseStoredDate
+  parses those by hand with the current year (verified by harness).
+- Dials per hour today = today's dials ÷ hours since midnight, with a
+  15-minute floor so one early dial does not read as 60/hour.
+- Receptionist minutes come from durationSec; calls with no duration
+  (missed / hung up before the relay) count as 0 minutes and are
+  flagged ("N calls have no duration recorded, so the minutes above are
+  a lower bound"), never guessed.
+- Fast: computes from the state payload already loaded for the session
+  plus the AI Rep proxy; no new KV writes on any view.
+
+HOW IT WORKS: pure function computeAnalytics(state, repCalls, range,
+nowMs) in app.js — every number is derivable in a Node harness without
+a browser. loadAnalytics() reloads state + receptionist calls (reusing
+aiRepCalls when the AI Rep tab already loaded them), then re-renders.
+CSS bars (.an-bar-*) appended to BOTH ripmode.css and style.css (the
+served file is style.css; keep them in sync, same as the .calbook
+rules).
+
+VERIFIED: Node harness (/tmp/analytics-harness.mjs) 65/65 against the
+real app.js — parseStoredDate (server format, year-less format, garbage
+→ null), hand-computed fixture (9 dials / 5 connected / 1 meeting all
+time; 8/5/1 last 7 days; 3/2/0 today; connect rates 55.6% / 62.5% /
+66.7%; receptionist 5.0 min ≈ $0.39 all time, 3.0 min ≈ $0.24 today),
+per-day buckets, per-lead, per-rep (Logan 1 dial all time, 0 in 7d;
+Braylen 0), empty state, render output (stat values, "Not tracked yet",
+balance note with date, double-log footnote), tab wiring via
+onNavigate("analytics"), zero occurrences of Rome's personal number.
+Deployed v=15 with the fixed deploy.py only; verified after deploy via
+the Cloudflare API that all bindings are still present on the worker
+(RECEPTIONIST_KEY secret + RIPMODE_KV c4dd1ffc… + TWILIO_ACCOUNT_SID +
+TWILIO_API_KEY_SID + TWILIO_TWIML_APP_SID + TWILIO_API_KEY_SECRET).
+Live: /ripmode 200, served app.js?v=15 and style.css?v=15
+byte-identical to local (sha256 match), Analytics nav present, zero
+occurrences of Rome's personal number in all served files.
+NO NUMBER DIALED. No account touched.
