@@ -4,9 +4,9 @@
    In-dashboard calling is Twilio Voice (2026-11-20): CALL dials through the
    browser via the Twilio Voice JS SDK when the token endpoint answers OK.
    Until Twilio is configured on the server, CALL falls back to opening
-   Google Voice and says so plainly — never a fake dial. TEXT always opens
-   Google Voice (Twilio SMS is a separate step, out of scope). Nothing here
-   auto-plays a script or auto-sends an SMS. */
+   Google Voice and says so plainly — never a fake dial. TEXT opens an
+   in-app composer and sends a real SMS from +1 239 349 9491 via Twilio
+   (POST /api/sms/send). Nothing here auto-plays a script. */
 const WORKER_API = "https://sfb-ripmode-router.2romanroyce8.workers.dev/api";
 // Prefix-aware (2026-11-21): the app serves at /ripmode AND /salesteam —
 // API calls stay on the prefix the page was loaded from. Sessions are
@@ -52,6 +52,14 @@ let activeConv = null;    // lead id for call-log conversation view
 let phoneSearch = "";    // live filter text for the unified Call Log list inside the iPhone mockup
 let micStream = null, micLevel = 0, micOn = false, muted = false;
 let readyOn = false;      // READY toggle state (survives re-renders; the pill is rendered from this)
+// In-app TEXT composer (2026-11-21): the TEXT button opens a composer in
+// the RIP MODE iPhone frame and sends a real SMS via POST /api/sms/send.
+// State survives re-renders in module memory; the draft is cleared only
+// on a successful send or when the lead changes.
+let smsComposerOpen = false;
+let smsDraft = "";
+let smsSending = false;
+let smsComposerError = "";
 
 /* ---------- Twilio in-dashboard calling (2026-11-20) ----------
    callState: "idle" | "dialing" | "ringing" | "connected" | "ended".
@@ -132,6 +140,15 @@ function capsBlockedReason() {
   if (m.dials >= ul.dials) return "Your daily limit reached — " + m.dials + "/" + ul.dials + " dials. Resets midnight ET.";
   if (t.talkSec >= tl.talkMin * 60) return "Team daily talk limit reached — " + Math.floor(t.talkSec / 60) + "/" + tl.talkMin + " minutes. Resets midnight ET.";
   if (m.talkSec >= ul.talkMin * 60) return "Your daily talk limit reached — " + Math.floor(m.talkSec / 60) + "/" + ul.talkMin + " minutes. Resets midnight ET.";
+  return "";
+}
+function capsSmsBlockedReason() {
+  // TEXT cap: team texts only (no per-person count — same as the caps
+  // already built). The server is the authority; this only greys the
+  // button — a console bypass still hits the server's 403.
+  if (!capsData) return "";
+  const t = capsTeam(), tl = capsLimits().team;
+  if (typeof t.sms === "number" && t.sms >= tl.sms) return "Team daily text limit reached — " + t.sms + "/" + tl.sms + " texts. Resets midnight ET.";
   return "";
 }
 async function loadCaps() {
@@ -383,15 +400,64 @@ function leadNameFor(id) {
 }
 function callsFor(leadId) { return (state.callLogs || []).filter((c) => c.leadId === leadId); }
 function convFor(leadId) { return (state.conversations || []).find((c) => c.leadId === leadId); }
+/* ---------- In-app texting (2026-11-21) ----------
+   TEXT sends a real SMS from +1 239 349 9491 via POST /api/sms/send.
+   A send is stored "sent — delivery not confirmed" (Twilio accept only);
+   only a Twilio-confirmed delivery is ever "delivered". */
+function smsStarterText(lead) {
+  // One short starter in the no-answer follow-up tone. The rep can edit
+  // it freely before sending — it is a suggestion, never auto-sent.
+  const first = String(lead.owner || "").trim().split(/\s+/)[0] || "";
+  const greet = first ? "Hi " + first + "," : "Hi there,";
+  return greet + " this is Roman from SFB Connect. Tried you about " + lead.business + " — we help roofers answer every call with AI, so no customer ever gets voicemail. Want a free 30-min call to see how it works? Book here: " + CAL_LINK;
+}
+function smsStatusLabel(m) {
+  // Honest delivery status for an in-app text. Thread messages saved
+  // before in-app texting have no sms field: no label either way (the
+  // app cannot know after the fact whether they were sent).
+  const s = m && m.sms;
+  if (!s || !s.status) return "";
+  if (s.status === "delivered") return "Delivered";
+  if (s.status === "sent-unconfirmed") return "Sent — delivery not confirmed";
+  if (s.status === "undelivered") return "Not delivered" + (s.error ? " — " + s.error : "");
+  if (s.status === "failed") return "Not delivered — " + (s.error || "send failed");
+  if (s.status === "not-sent") return "Not sent — " + (s.error || "send failed");
+  return "";
+}
+async function sendSmsInApp(leadId, text) {
+  // Posts to the server (cap-checked + Twilio send + thread store).
+  // Returns the server's result; throws with the server's message on
+  // cap / config / Twilio failure. The caller reloads state + caps.
+  return api("/sms/send", "POST", { leadId, text });
+}
+function smsComposerHtml(lead) {
+  const conv = convFor(lead.id) || { messages: [] };
+  const msgs = conv.messages || [];
+  return `
+  <div id="sms-composer" style="margin-top:10px">
+    <div class="section-title">Text ${esc(lead.business)}</div>
+    <div class="chat-thread" style="max-height:220px;overflow:auto">
+      ${msgs.length ? msgs.map((m) => {
+        const st = smsStatusLabel(m);
+        return `<div class="msg ${m.from === "me" ? "out" : "in"}">${esc(m.text)}</div>${st ? `<div class="im-stamp" style="text-align:${m.from === "me" ? "right" : "left"}">${esc(st)}${m.sentBy ? " · " + esc(DISPLAY_NAMES[m.sentBy] || m.sentBy) : ""}</div>` : ""}`;
+      }).join("") : `<div class="notice">No messages yet for this lead.</div>`}
+    </div>
+    <textarea class="input" id="sms-input" rows="4" placeholder="Type a text…">${esc(smsDraft)}</textarea>
+    <div style="display:flex;gap:8px;margin-top:8px">
+      <button class="btn btn--primary" id="sms-send-btn" style="flex:1" ${smsSending ? "disabled" : ""}>${smsSending ? "Sending…" : "Send text"}</button>
+      <button class="btn" id="sms-close-btn">Close</button>
+    </div>
+    ${smsComposerError ? `<div class="error" style="margin-top:8px">${esc(smsComposerError)}</div>` : ""}
+    <p class="hint-line">Sends from +1 239 349 9491. Delivery is confirmed only when the carrier reports it — A2P registration is still pending, so a text can be blocked after it is sent.</p>
+  </div>`;
+}
 function bumpStat(key) { state.sessionStats[key] = (state.sessionStats[key] || 0) + 1; }
 
-function openGoogleVoice(kind, lead) {
-  // Google Voice has no API and no prefill URL — open the right GV screen,
-  // show the number / message, and let Rome dial or send from GV itself.
-  const url = kind === "text"
-    ? "https://voice.google.com/u/0/messages"
-    : "https://voice.google.com/u/0/calls";
-  window.open(url, "_blank");
+function openGoogleVoiceCall(lead) {
+  // CALL fallback only (Twilio not configured): Google Voice has no API
+  // and no prefill URL — open the calls screen and let Rome dial from GV
+  // itself. Texting never goes through Google Voice anymore (in-app SMS).
+  window.open("https://voice.google.com/u/0/calls", "_blank");
 }
 
 /* ---------- Twilio in-dashboard calling (2026-11-20) ----------
@@ -400,7 +466,7 @@ function openGoogleVoice(kind, lead) {
    lives in module scope so re-renders never drop it. When the token
    endpoint says Twilio is not configured (twilioReady === false), CALL
    falls back to Google Voice and says so plainly — never a fake dial.
-   TEXT always stays Google Voice. */
+   TEXT opens the in-app SMS composer (Twilio, +1 239 349 9491). */
 function fmtElapsed(sec) {
   sec = Math.max(0, Math.floor(sec || 0));
   return String(Math.floor(sec / 60)).padStart(2, "0") + ":" + String(sec % 60).padStart(2, "0");
@@ -1025,7 +1091,9 @@ function renderRip() {
         </div>
         <button class="big-call${callState !== "idle" ? " end" : ""}" id="call-btn" ${callState === "idle" && capsBlockedReason() ? "disabled" : ""}>${callState !== "idle" ? "END CALL" : "CALL"}</button>
         <div id="caps-block-note" class="${capsBlockedReason() ? "error" : "hidden"}" style="margin-top:8px">${esc(capsBlockedReason())}</div>
-        <button class="btn" id="text-btn" style="width:100%;margin-top:8px;padding:13px">TEXT</button>
+        <button class="btn" id="text-btn" style="width:100%;margin-top:8px;padding:13px" ${capsSmsBlockedReason() ? "disabled" : ""}>TEXT</button>
+        ${capsSmsBlockedReason() ? `<div class="error" style="margin-top:8px">${esc(capsSmsBlockedReason())}</div>` : ""}
+        ${smsComposerOpen ? smsComposerHtml(lead) : ""}
       </div>`;
   return `
   ${capsStripCompactHtml()}
@@ -1064,7 +1132,7 @@ function renderRip() {
         <button class="btn" data-dispo="send_vsl">Send VSL</button>
       </div>
       <button class="btn btn-green" id="book-meeting-btn" style="width:100%;padding:14px;font-size:16px;margin-top:10px">MEETING BOOKED — CONFIRM + EMAIL + SMS</button>
-      <p class="hint-line">Confirm books the meeting; email queued (Resend pending), SMS via Google Voice.</p>
+      <p class="hint-line">Confirm books the meeting; email queued (Resend pending), confirmation text sent in-app.</p>
       <div style="display:flex;gap:8px;margin-top:12px">
         <button class="btn" id="prev-lead" ${ripIndex === 0 ? "disabled" : ""}>← Prev lead</button>
         <button class="btn" id="next-lead" ${ripIndex >= leads.length - 1 ? "disabled" : ""}>Next lead →</button>
@@ -1090,8 +1158,9 @@ function bindRip() {
   const lead = leads[ripIndex];
   if (!lead) return;
   const prev = $("#prev-lead"), next = $("#next-lead");
-  if (prev) prev.onclick = () => { if (ripIndex > 0) { ripIndex--; render(); } };
-  if (next) next.onclick = () => { if (ripIndex < leads.length - 1) { ripIndex++; render(); } };
+  // The TEXT composer belongs to one lead: changing leads closes it.
+  if (prev) prev.onclick = () => { if (ripIndex > 0) { ripIndex--; smsComposerOpen = false; smsDraft = ""; smsComposerError = ""; render(); } };
+  if (next) next.onclick = () => { if (ripIndex < leads.length - 1) { ripIndex++; smsComposerOpen = false; smsDraft = ""; smsComposerError = ""; render(); } };
   document.querySelectorAll("[data-dispo]").forEach((b) => {
     b.onclick = async () => {
       const d = b.dataset.dispo;
@@ -1120,9 +1189,21 @@ function bindRip() {
         render();
       }
     }
+    // Confirmation text, in-app (2026-11-21): the old flow opened Google
+    // Voice. The text now goes through POST /api/sms/send — the toast
+    // reports what actually happened, never a claimed send.
     const text = `Hi, this is Roman from SFB Connect — confirming our meeting. Here is the booking link if you need it: ${CAL_LINK}`;
-    showToast("Meeting booked for " + lead.business + ". " + emailNote + " SMS: Google Voice will open with this text ready to send:\n\n" + text);
-    openGoogleVoice("text", lead);
+    let smsNote;
+    try {
+      await sendSmsInApp(lead.id, text);
+      await loadState(); await loadCaps();
+      smsNote = "Confirmation text sent — delivery not confirmed yet.";
+    } catch (e2) {
+      try { await loadState(); await loadCaps(); } catch (_) {}
+      smsNote = "Text not sent — " + (e2.message || "try again.");
+    }
+    render();
+    showToast("Meeting booked for " + lead.business + ". " + emailNote + " " + smsNote);
   };
   const readyBtn = $("#ready-btn");
   if (readyBtn) readyBtn.onclick = async () => {
@@ -1161,10 +1242,42 @@ function bindRip() {
     // Google Voice fallback (Twilio not configured yet) — same as before:
     // log the dial, then open Google Voice. The status line says so plainly.
     await mutate("logDisposition", {leadId: lead.id, outcome: "dialed", stat: "dials", dialOnly: true});
-    openGoogleVoice("call", lead);
+    openGoogleVoiceCall(lead);
   };
   const textBtn = $("#text-btn");
-  if (textBtn) textBtn.onclick = () => openGoogleVoice("text", lead);
+  if (textBtn) textBtn.onclick = () => {
+    const blocked = capsSmsBlockedReason();
+    if (blocked) { showToast(blocked); return; }
+    smsComposerOpen = !smsComposerOpen;
+    if (smsComposerOpen && !smsDraft) smsDraft = smsStarterText(lead);
+    smsComposerError = "";
+    render();
+  };
+  // In-app TEXT composer (2026-11-21): lives inside the iPhone frame,
+  // under the TEXT button. The draft survives re-renders in module
+  // memory; it clears only on a successful send or a lead change.
+  const smsInput = $("#sms-input");
+  if (smsInput) smsInput.addEventListener("input", () => { smsDraft = smsInput.value; });
+  const smsClose = $("#sms-close-btn");
+  if (smsClose) smsClose.onclick = () => { smsComposerOpen = false; smsComposerError = ""; render(); };
+  const smsSend = $("#sms-send-btn");
+  if (smsSend) smsSend.onclick = async () => {
+    const text = (smsInput ? smsInput.value : smsDraft).trim();
+    if (!text || smsSending) return;
+    smsSending = true; smsComposerError = "";
+    smsSend.disabled = true; smsSend.textContent = "Sending…";
+    try {
+      await sendSmsInApp(lead.id, text);
+      smsDraft = "";
+      await loadState(); await loadCaps();
+      render();
+    } catch (e) {
+      smsComposerError = e.message || "Text failed — try again.";
+      try { await loadState(); await loadCaps(); } catch (_) {}
+      render();
+    }
+    smsSending = false;
+  };
   // Owner-only test call box (rendered only for the owner — see renderRip).
   // Dials the typed number through the same Twilio path as a lead call, with
   // NO Google Voice fallback and NO logging: the number is never saved.
@@ -1705,7 +1818,10 @@ function renderCallLog() {
       </div>
       <div class="iphone-body"><div class="chat-thread iphone-thread">
         ${calls.map((c) => `<div class="im-sys">Call — ${esc(callLabel(c.outcome))} · ${esc(c.date)} · ${esc(c.time)}</div>`).join("")}
-        ${(conv.messages || []).map((m) => `${(m.date || m.time) ? `<div class="im-stamp">${esc(m.date || "")}${m.date && m.time ? " · " : ""}${esc(m.time || "")}</div>` : ""}<div class="msg ${m.from === "me" ? "out" : "in"}">${esc(m.text)}</div>`).join("") || ""}
+        ${(conv.messages || []).map((m) => {
+          const st = smsStatusLabel(m);
+          return `${(m.date || m.time) ? `<div class="im-stamp">${esc(m.date || "")}${m.date && m.time ? " · " : ""}${esc(m.time || "")}</div>` : ""}<div class="msg ${m.from === "me" ? "out" : "in"}">${esc(m.text)}</div>${st ? `<div class="im-stamp" style="text-align:${m.from === "me" ? "right" : "left"}">${esc(st)}${m.sentBy ? " · " + esc(DISPLAY_NAMES[m.sentBy] || m.sentBy) : ""}</div>` : ""}`;
+        }).join("") || ""}
         ${!calls.length && !(conv.messages || []).length ? `<div class="notice iphone-empty">No calls or messages yet for this lead.</div>` : ""}
       </div></div>`;
   }
@@ -1722,7 +1838,7 @@ function renderCallLog() {
             <input class="input" id="chat-input" type="text" placeholder="iMessage">
             <button class="chat-send" id="chat-send" type="button" aria-label="Send">↑</button>
           </div>
-          <p class="notice iphone-note">${isTeam ? "Messages here go to the whole team — Roman, Logan, and Braylen." : "Messages you type here are saved to this lead's thread. Outbound texts go through Google Voice — use the TEXT button in RIP MODE to send them."}</p>
+          <p class="notice iphone-note">${isTeam ? "Messages here go to the whole team — Roman, Logan, and Braylen." : "Messages you type here are texted to the lead from +1 239 349 9491 — delivery is confirmed only when the carrier reports it."}</p>
         </div>
       </div>`);
 }
@@ -1762,7 +1878,22 @@ function bindCallLog() {
     const text = inp.value.trim();
     if (!text) return;
     if (!activeConv || activeConv === "__team__") await mutate("sendTeamMessage", {text});
-    else await mutate("addMessage", {leadId: activeConv, text, from: "me"});
+    else {
+      // Lead thread: a real in-app text (2026-11-21). The old path only
+      // saved the text to the thread — it never sent anything. Now the
+      // server sends it and stores the honest delivery status; a failed
+      // send shows in the thread as not delivered.
+      try {
+        await sendSmsInApp(activeConv, text);
+        inp.value = "";
+        await loadState(); await loadCaps();
+        render();
+      } catch (e) {
+        try { await loadState(); } catch (_) {}
+        render();
+        showToast(e.message || "Text failed — try again.");
+      }
+    }
   };
   if (send) send.onclick = sendMsg;
   const inp = $("#chat-input");
@@ -2644,7 +2775,7 @@ function openStaffSettings() {
 /* ---------- CONNECTIONS ---------- */
 function renderConnections() {
   const rows = [
-    ["Google Voice", "Connected", "Calling + texting from (213) 495-3536. Free. No API — TEXT opens Google Voice; CALL uses Twilio when live, Google Voice until then.", "green"],
+    ["Google Voice", "Connected", "Google Voice (213) 495-3536 stays as the manual fallback. Texting is in-app now — TEXT sends a real SMS from +1 239 349 9491 via Twilio; CALL uses Twilio when live, Google Voice until then.", "green"],
     ["Cal.com", "Connected", "7 event types verified. Booking link: " + CAL_LINK, "green"],
     ["Gmail", "Connected via Muse", "Muse connector is connected. This app does not sync Gmail itself.", "green"],
     ["Google Calendar / Meet", "Connected via Muse", "Muse connector is connected. Meet links are created through Calendar events.", "green"],

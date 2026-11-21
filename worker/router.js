@@ -4,8 +4,10 @@
 // Passcodes are stored ONLY as salted PBKDF2-SHA256 hashes (100,000 iterations — the Cloudflare Workers PBKDF2 cap).
 // Login is username + exactly 4 digits. The JSON field is still named
 // "password" on the wire; its value is the 4-digit passcode.
-// Google Voice has NO API: TEXT still opens Google Voice, and CALL falls
-// back to Google Voice until Twilio is live. In-dashboard calling is
+// Texting is in-app (2026-11-21): the TEXT button opens a composer that
+// posts to POST /api/sms/send, which sends a real SMS from +1 239 349 9491
+// via the Twilio Messages API. Google Voice is only the CALL fallback
+// until Twilio is live. In-dashboard calling is
 // Twilio Voice: this worker NEVER dials itself — it only mints short-lived
 // Voice access tokens (POST /api/voice/token) from env vars, and the
 // browser's Twilio Voice SDK places the call. No Twilio secret value may
@@ -52,6 +54,94 @@ function hex(buf) {
 }
 async function sha256Hex(text) {
   return hex(await crypto.subtle.digest("SHA-256", enc.encode(text)));
+}
+// ---- In-app SMS (2026-11-21) ----
+// The TEXT button used to open Google Voice. It now posts to
+// POST /api/sms/send, which sends a real SMS from +1 239 349 9491 via the
+// Twilio Messages API — the same Basic-auth API-key pattern the
+// receptionist worker's sendSms uses. Twilio accepting a message is NOT
+// delivery: an accepted send is stored "sent-unconfirmed" and only a
+// Twilio "delivered" status ever becomes "delivered" (refreshSmsStatuses,
+// mirrored from the receptionist worker). A2P 10DLC is NOT registered,
+// so carrier blocking is possible — the UI never promises delivery.
+const SMS_FROM_NUMBER = "+12393499491";
+function normUsPhone(p) {
+  const d = String(p || "").replace(/\D/g, "");
+  if (d.length === 10) return "+1" + d;
+  if (d.length === 11 && d[0] === "1") return "+" + d;
+  return null;
+}
+async function sendSmsViaTwilio(env, to, body) {
+  const sid = env.TWILIO_ACCOUNT_SID;
+  const keySid = env.TWILIO_API_KEY_SID;
+  const keySecret = env.TWILIO_API_KEY_SECRET;
+  if (!sid || !keySid || !keySecret) return { ok: false, error: "twilio-sms-not-configured" };
+  if (!to) return { ok: false, error: "no-destination" };
+  try {
+    const creds = btoa(`${keySid}:${keySecret}`);
+    const form = new URLSearchParams({ From: SMS_FROM_NUMBER, To: to, Body: body });
+    const resp = await globalThis.fetch(`https://api.twilio.com/2010-04-01/Accounts/${sid}/Messages.json`, {
+      method: "POST",
+      headers: { Authorization: `Basic ${creds}`, "Content-Type": "application/x-www-form-urlencoded" },
+      body: form.toString(),
+    });
+    const data = await resp.json().catch(() => ({}));
+    if (!resp.ok) return { ok: false, error: `twilio-${resp.status}-${data.code || "unknown"}` };
+    return { ok: true, sid: data.sid };
+  } catch (e) {
+    return { ok: false, error: String((e && e.message) || e) };
+  }
+}
+async function fetchTwilioMessageStatus(env, sid) {
+  // Returns { status, error? } or null (unknown — keep "sent-unconfirmed").
+  if (!env.TWILIO_ACCOUNT_SID || !env.TWILIO_API_KEY_SID || !env.TWILIO_API_KEY_SECRET) return null;
+  try {
+    const creds = btoa(`${env.TWILIO_API_KEY_SID}:${env.TWILIO_API_KEY_SECRET}`);
+    const resp = await globalThis.fetch(`https://api.twilio.com/2010-04-01/Accounts/${env.TWILIO_ACCOUNT_SID}/Messages/${encodeURIComponent(sid)}.json`, {
+      headers: { Authorization: `Basic ${creds}` },
+    });
+    if (!resp.ok) return null;
+    const data = await resp.json().catch(() => ({}));
+    const st = String(data.status || "");
+    if (st === "delivered") return { status: "delivered" };
+    if (st === "undelivered") return { status: "undelivered", error: data.error_code ? `twilio-${data.error_code}` : "undelivered" };
+    if (st === "failed") return { status: "failed", error: data.error_code ? `twilio-${data.error_code}` : "failed" };
+    return null; // queued / sending / sent / accepted — still unconfirmed
+  } catch (_) {
+    return null;
+  }
+}
+const SMS_REFRESH_MAX = 5;
+const SMS_REFRESH_DAYS = 7;
+async function refreshSmsStatuses(env, s) {
+  // Bounded, best-effort, never throws: refreshes "sent-unconfirmed"
+  // dashboard SMS SIDs against the Twilio Messages API when state is
+  // fetched. Returns true if any record changed (caller persists).
+  try {
+    const cutoff = Date.now() - SMS_REFRESH_DAYS * 24 * 60 * 60 * 1000;
+    const jobs = [];
+    for (const conv of (s.conversations || [])) {
+      for (const m of (conv.messages || [])) {
+        if (!m || !m.sms || m.sms.status !== "sent-unconfirmed" || !m.sms.sid) continue;
+        const at = Date.parse((m.date || "") + " " + (m.time || ""));
+        if (!Number.isNaN(at) && at < cutoff) continue;
+        jobs.push({ m, sid: m.sms.sid });
+        if (jobs.length >= SMS_REFRESH_MAX) break;
+      }
+      if (jobs.length >= SMS_REFRESH_MAX) break;
+    }
+    let changed = false;
+    for (const job of jobs) {
+      const found = await fetchTwilioMessageStatus(env, job.sid);
+      if (found) {
+        job.m.sms = { ...job.m.sms, status: found.status, ...(found.error ? { error: found.error } : {}) };
+        changed = true;
+      }
+    }
+    return changed;
+  } catch (_) {
+    return false;
+  }
 }
 // ---- Twilio Voice access tokens (in-dashboard calling) ----
 // A Twilio Access Token is a JWT: header.payload signed with HMAC-SHA256
@@ -536,7 +626,10 @@ async function handleApi(request, env) {
     try { stored = JSON.parse(raw); } catch (_) { stored = null; }
     return capsMergeLimits(stored);
   }
-  function capsBlank() { return { dials: 0, talkSec: 0, emails: 0 }; }
+  // sms counts THIS worker's dashboard-sent texts only. The team text
+  // total is the receptionist's count (Ava's texts) + this count — see
+  // GET /api/caps. Texts stay team-only: no per-user sms counter.
+  function capsBlank() { return { dials: 0, talkSec: 0, emails: 0, sms: 0 }; }
   async function getCapsCounters(env, date, user) {
     const key = "caps:" + date + (user ? ":" + user : "");
     const raw = await env.RIPMODE_KV.get(key);
@@ -547,6 +640,7 @@ async function handleApi(request, env) {
       dials: Math.max(0, Number(c.dials) || 0),
       talkSec: Math.max(0, Number(c.talkSec) || 0),
       emails: Math.max(0, Number(c.emails) || 0),
+      sms: Math.max(0, Number(c.sms) || 0),
     };
   }
   async function saveCapsCounters(env, date, user, c) {
@@ -598,7 +692,15 @@ async function handleApi(request, env) {
       capsReceptionistToday(),
       Promise.all(ALLOWED_USERS.map((u) => getCapsCounters(env, date, u))),
     ]);
-    const teamUsed = { dials: team.dials, talkSec: team.talkSec, sms: smsRes.sms, emails: team.emails };
+    // Team text total = Ava's texts (receptionist) + dashboard texts
+    // (this worker). If the receptionist count is unavailable, the total
+    // covers dashboard texts only and the note says so — never a number
+    // presented as the full team total when it is not.
+    const teamSms = (typeof smsRes.sms === "number" ? smsRes.sms : 0) + (team.sms || 0);
+    const smsNote = smsRes.sms === null
+      ? "Receptionist text count is unavailable right now — this count covers dashboard-sent texts only."
+      : "";
+    const teamUsed = { dials: team.dials, talkSec: team.talkSec, sms: teamSms, emails: team.emails };
     const mineUsed = { dials: mine.dials, talkSec: mine.talkSec, sms: null, emails: mine.emails };
     const users = {};
     ALLOWED_USERS.forEach((u, i) => {
@@ -614,7 +716,7 @@ async function handleApi(request, env) {
       team: teamUsed,
       mine: mineUsed,
       users,
-      smsNote: smsRes.note,
+      smsNote,
       receptionistMinutes: recep.minutes,
       receptionistCostEst: recep.costEst,
       // Cost estimates, labelled as estimates — never presented as bills.
@@ -756,8 +858,80 @@ async function handleApi(request, env) {
     return json({ ok: true, limits, receptionistSmsSync });
   }
 
+  // ---- In-app texting (2026-11-21) ----
+  // POST /api/sms/send — send a real SMS to a lead from +1 239 349 9491.
+  // Cap-checked FIRST against the team text cap (100/day, team-only):
+  // the count is the receptionist's count (Ava's texts) + this worker's
+  // count (dashboard texts). At the cap the send is refused and nothing
+  // is stored. A Twilio-accepted send is stored as "sent — delivery not
+  // confirmed" (never "delivered" on accept) and counts against the cap;
+  // a Twilio failure is stored as "failed", never as sent, and does not
+  // count. Sender is the signed-in user (stored as sentBy).
+  if (path === "/api/sms/send" && request.method === "POST") {
+    const body = await request.json().catch(() => ({}));
+    const leadId = String(body.leadId || "");
+    const text = String(body.text || "").trim();
+    const s = await getState(env);
+    const lead = (s.leads || []).find((x) => x.id === leadId);
+    if (!lead) return err("Lead not found.", 400);
+    if (!text || text.length > 2000) return err("Enter a message of 2000 characters or fewer.", 400);
+    const to = normUsPhone(lead.phone);
+    if (!to) return err("This lead has no usable phone number.", 400);
+    const limits = await getCapsLimits(env);
+    const capsDate = etDateStr();
+    const smsRes = await capsSmsFromReceptionist();
+    const teamCounters = await getCapsCounters(env, capsDate);
+    const used = (typeof smsRes.sms === "number" ? smsRes.sms : 0) + (teamCounters.sms || 0);
+    if (used >= limits.team.sms) {
+      return err("Team daily limit reached — " + used + "/" + limits.team.sms + " texts. Resets midnight ET.", 403);
+    }
+    const now = new Date();
+    const date = now.toLocaleDateString("en-US", { month: "short", day: "numeric", year: "numeric" });
+    const time = now.toLocaleTimeString("en-US", { hour: "numeric", minute: "2-digit" });
+    const storeMessage = (smsInfo) => {
+      if (!Array.isArray(s.conversations)) s.conversations = [];
+      let conv = s.conversations.find((c) => c.leadId === leadId);
+      if (!conv) { conv = { leadId, leadName: lead.business, messages: [] }; s.conversations.push(conv); }
+      if (!conv.leadName) conv.leadName = lead.business;
+      const msg = { id: "msg-" + crypto.randomUUID().slice(0, 8), from: "me", text, date, time, sentBy: username, sms: smsInfo };
+      conv.messages.push(msg);
+      return msg;
+    };
+    if (!env.TWILIO_ACCOUNT_SID || !env.TWILIO_API_KEY_SID || !env.TWILIO_API_KEY_SECRET) {
+      storeMessage({ status: "not-sent", error: "twilio-sms-not-configured" });
+      await saveState(env, s);
+      return err("Texting is not set up yet — Twilio SMS is not configured on the server.", 503);
+    }
+    const res = await sendSmsViaTwilio(env, to, text);
+    if (!res.ok) {
+      storeMessage({ status: "failed", error: res.error || "twilio-send-failed" });
+      await saveState(env, s);
+      return err("Text failed — " + (res.error || "Twilio did not accept the message."), 502);
+    }
+    const msg = storeMessage({ status: "sent-unconfirmed", sid: res.sid });
+    // Count the send (re-read first so a concurrent send is not silently
+    // overwritten — same pattern as the receptionist's sendSmsCapped).
+    const fresh = await getCapsCounters(env, capsDate);
+    fresh.sms = (fresh.sms || 0) + 1;
+    await saveCapsCounters(env, capsDate, null, fresh);
+    for (const fu of (s.followUps || [])) {
+      if (fu.leadId === leadId && fu.kind === "sms" && fu.status === "pending") fu.status = "sent";
+    }
+    await saveState(env, s);
+    return json({
+      ok: true, status: "sent-unconfirmed", sid: res.sid, messageId: msg.id,
+      teamSmsUsed: used + 1, teamSmsLimit: limits.team.sms,
+      ...(smsRes.sms === null ? { smsSourceNote: "Receptionist text count was unavailable — the cap check used dashboard-sent texts only." } : {}),
+    });
+  }
+
   if (path === "/api/state" && request.method === "GET") {
-    return json(await getState(env));
+    const s = await getState(env);
+    // Delivery truth: refresh unconfirmed dashboard SMS SIDs against
+    // Twilio before serving state. Bounded + best-effort — a lookup
+    // failure never breaks this response.
+    if (await refreshSmsStatuses(env, s)) await saveState(env, s);
+    return json(s);
   }
   if (path === "/api/state" && request.method === "POST") {
     const body = await request.json().catch(() => ({}));
@@ -822,7 +996,7 @@ async function handleApi(request, env) {
       if (l && l.stage === "New") l.stage = "In conversation";
       s.callLogs.push({ id: "call-" + crypto.randomUUID().slice(0, 8), leadId: body.leadId, leadName: l ? l.business : "", outcome: "meeting_booked", date, time, by: username });
       s.followUps.push({ id: "fu-" + crypto.randomUUID().slice(0, 8), leadId: body.leadId, kind: "email", status: "queued", note: "Meeting confirmation email — queued until Resend is wired.", date, time });
-      s.followUps.push({ id: "fu-" + crypto.randomUUID().slice(0, 8), leadId: body.leadId, kind: "sms", status: "pending", note: "Meeting confirmation SMS — send via Google Voice (not sent automatically).", date, time });
+      s.followUps.push({ id: "fu-" + crypto.randomUUID().slice(0, 8), leadId: body.leadId, kind: "sms", status: "pending", note: "Meeting confirmation SMS — sent in-app from the dialer after booking.", date, time });
     } else if (op === "addMessage") {
       // leadName stored on the conversation (delete safeguard, 2026-11-21)
       // so a deleted lead's thread stays readable; backfilled for older

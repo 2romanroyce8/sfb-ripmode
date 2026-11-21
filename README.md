@@ -1261,3 +1261,46 @@ TWILIO_API_KEY_SID, TWILIO_API_KEY_SECRET, TWILIO_TWIML_APP_SID,
 BILLME_SYNC_SECRET). Live https://sixfigureblueprints.com/ripmode 200 with
 served app.js/style.css byte-identical to local (v=19). Zero occurrences
 of Rome's personal forwarding number in served files.
+
+## In-app texting — TEXT sends a real SMS (2026-11-21)
+Rome: "when i click text it opens google voice not in app fix". The TEXT
+button used to open voice.google.com/u/0/messages. It now opens an
+in-app composer inside the RIP MODE iPhone frame (thread for the current
+lead + editable starter text + Send) and posts to the new endpoint
+POST /api/sms/send, which sends a real SMS from +1 239 349 9491 via the
+Twilio Messages API (same Basic-auth API-key pattern as the receptionist
+worker's sendSms). No Google Voice path remains for texting: grep proves
+zero `voice.google.com/u/0/messages`, zero `sms:` URIs, zero
+`openGoogleVoice("text"` in the served files. The CALL fallback to
+Google Voice is unchanged (calls only, when Twilio is not configured);
+the voicemail script's spoken "Call me back at (213) 495-3536" is words
+in a script, not a link, and stays.
+- Endpoint: session-checked; validates lead + text (1–2000 chars) +
+  a usable US phone. Cap-checked FIRST against the team text cap
+  (100/day, team-only): the count is Ava's texts (receptionist
+  /api/caps) + this worker's dashboard texts (caps:YYYY-MM-DD sms).
+  At the cap the send is refused (403, same "Team daily limit
+  reached — X/100 texts" wording as dials) and nothing is stored.
+  GET /api/caps now reports the combined team total.
+- Honest delivery: a Twilio-accepted send is stored as "sent —
+  delivery not confirmed" (never "delivered" on accept) with the SID +
+  sentBy (signed-in user) on the message, and counts against the cap.
+  A Twilio failure is stored as "failed" with the Twilio error and does
+  NOT count. GET /api/state refreshes unconfirmed SIDs against the
+  Twilio Messages API (last 7 days, max 5 lookups, never breaks the
+  response) — same delivery-truth pattern as the receptionist worker.
+  A2P 10DLC is NOT registered, so carrier blocking is possible; the UI
+  never promises delivery.
+- The same send path is used everywhere texting happens: the RIP MODE
+  composer, the Call Log lead-thread input (which used to only SAVE the
+  text to the thread without sending anything — now it really sends),
+  and the MEETING BOOKED confirmation text (was Google Voice, now
+  in-app; the toast reports the real outcome). The thread renders each
+  in-app text's status honestly ("Sent — delivery not confirmed" /
+  "Delivered" / "Not delivered — …"). Legacy thread messages saved
+  before in-app texting have no status field and show no label.
+- Harness /tmp/sms-harness.mjs: 42/42 against the real standalone.js
+  (mocked Twilio + receptionist caps): auth 401, validation 400s,
+  accept → sent-unconfirmed + sentBy + counter, cap 403 (ripmode-only
+  and combined recep+ripmode counts), Twilio failure → failed + no
+  count, refresh → delivered and undelivered + twilio-30034.
