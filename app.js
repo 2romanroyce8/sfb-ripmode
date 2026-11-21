@@ -317,6 +317,22 @@ function showToast(msg) { alert(msg); }
 
 /* ---------- shared helpers ---------- */
 function leadById(id) { return (state.leads || []).find((l) => l.id === id); }
+// Display name for a lead id, even after the lead itself was deleted
+// (delete safeguard, 2026-11-21): the name stored on the newest call log
+// / conversation / meeting for that lead, so orphaned history never
+// renders blank. Falls back to "Deleted lead" — never "" and never a crash.
+function leadNameFor(id) {
+  const lead = leadById(id);
+  if (lead) return lead.business;
+  const calls = (state.callLogs || []).filter((c) => c.leadId === id);
+  const lastCall = calls[calls.length - 1];
+  if (lastCall && lastCall.leadName) return lastCall.leadName;
+  const conv = (state.conversations || []).find((c) => c.leadId === id);
+  if (conv && conv.leadName) return conv.leadName;
+  const mtg = (state.meetings || []).find((m) => m.leadId === id);
+  if (mtg && mtg.leadName) return mtg.leadName;
+  return "Deleted lead";
+}
 function callsFor(leadId) { return (state.callLogs || []).filter((c) => c.leadId === leadId); }
 function convFor(leadId) { return (state.conversations || []).find((c) => c.leadId === leadId); }
 function bumpStat(key) { state.sessionStats[key] = (state.sessionStats[key] || 0) + 1; }
@@ -1162,9 +1178,54 @@ function bindLeads() {
     await mutate("setStage", {leadId: b.dataset.convert, stage: "In conversation"});
     currentTab = "pipeline"; render();
   });
-  document.querySelectorAll("[data-del]").forEach((b) => b.onclick = async () => {
-    if (confirm("Delete this lead?")) await mutate("deleteLead", {leadId: b.dataset.del});
+  document.querySelectorAll("[data-del]").forEach((b) => b.onclick = () => {
+    // Delete safeguard (2026-11-21): no native confirm(), no single-click
+    // delete. An in-app modal asks first, and the server refuses any
+    // delete without confirmed:true — so a stray click or a console call
+    // cannot delete silently. The lead's call history is never deleted.
+    const lead = leadById(b.dataset.del);
+    if (lead) confirmDeleteLead(lead);
   });
+}
+/* Delete confirm modal — appended to document.body (outside #main) so a
+   re-render can never wipe it mid-decision. Template classes only
+   (.card / .btn / .btn--primary / .btn-danger). Cancel, Escape, or the
+   backdrop closes it and deletes nothing. Confirm sends confirmed:true;
+   the server still re-checks it. */
+function confirmDeleteLead(lead) {
+  closeDeleteConfirm();
+  const overlay = document.createElement("div");
+  overlay.className = "confirm-overlay";
+  overlay.id = "delete-confirm";
+  overlay.innerHTML = `<div class="card confirm-card" role="dialog" aria-label="Delete lead">
+    <div class="section-title" style="margin-top:0">Delete this lead?</div>
+    <p><b>${esc(lead.business)}</b>${lead.phone ? ` · ${esc(lead.phone)}` : ""}</p>
+    <p class="notice">Its call history stays in the Call Log.</p>
+    <div style="display:flex;gap:8px;justify-content:flex-end;margin-top:14px">
+      <button class="btn" id="delete-cancel" type="button">Cancel</button>
+      <button class="btn btn-danger" id="delete-confirm-btn" type="button">Delete lead</button>
+    </div>
+  </div>`;
+  overlay.addEventListener("click", (e) => { if (e.target === overlay) closeDeleteConfirm(); });
+  overlay.querySelector("#delete-cancel").onclick = () => closeDeleteConfirm();
+  overlay.querySelector("#delete-confirm-btn").onclick = async (e) => {
+    e.target.disabled = true; // one delete only — no double-click double-delete
+    closeDeleteConfirm();
+    try { await mutate("deleteLead", {leadId: lead.id, confirmed: true}); }
+    catch (err2) { showToast("Delete failed — " + (err2.message || "try again.")); }
+  };
+  document.body.appendChild(overlay);
+  document.addEventListener("keydown", confirmDeleteEscape);
+  const cancel = overlay.querySelector("#delete-cancel");
+  if (cancel) cancel.focus();
+}
+function confirmDeleteEscape(e) {
+  if (e.key === "Escape") closeDeleteConfirm();
+}
+function closeDeleteConfirm() {
+  document.removeEventListener("keydown", confirmDeleteEscape);
+  const old = document.getElementById("delete-confirm");
+  if (old) old.remove();
 }
 
 /* ---------- PIPELINE ---------- */
@@ -1253,7 +1314,8 @@ function renderCalendar() {
         <div class="section-title" style="margin-top:0">Booked meetings</div>
         ${meetings.length ? meetings.map((m) => {
           const l = leadById(m.leadId);
-          return `<div class="kv"><span>${esc(l ? l.business : "Meeting")}<br><span style="color:var(--muted);font-size:12px">${esc(m.date)} · ${esc(m.time)} · ${esc(m.typeName || "")}</span></span><span class="badge green">Booked</span></div>`;
+          // Deleted lead: show the name stored on the meeting itself.
+          return `<div class="kv"><span>${esc(m.leadName || (l ? l.business : "Meeting"))}<br><span style="color:var(--muted);font-size:12px">${esc(m.date)} · ${esc(m.time)} · ${esc(m.typeName || "")}</span></span><span class="badge green">Booked</span></div>`;
         }).join("") : `<div class="notice">No meetings booked yet.</div>`}
       </div>
     </div>
@@ -1366,11 +1428,14 @@ function renderCallLog() {
     const lead = leadById(activeConv);
     const conv = convFor(activeConv) || {messages: []};
     const calls = callsFor(activeConv);
+    // Deleted lead: the thread stays readable under the name stored on
+    // its history (delete safeguard, 2026-11-21) — never blank.
+    const displayName = lead ? lead.business : leadNameFor(activeConv);
     return iphoneChrome(`
       <div class="iphone-thread-head">
         <button class="iphone-back" id="back-convs" type="button" aria-label="Back to all conversations">‹</button>
-        <span class="im-avatar iphone-head-avatar">${esc(initialsFor(lead ? lead.business : "?"))}</span>
-        <span class="iphone-head-name"><b>${esc(lead ? lead.business : "Conversation")}</b><span>${esc(lead ? lead.phone : "")} · ${calls.length} call${calls.length === 1 ? "" : "s"} logged</span></span>
+        <span class="im-avatar iphone-head-avatar">${esc(initialsFor(displayName))}</span>
+        <span class="iphone-head-name"><b>${esc(displayName)}</b><span>${esc(lead ? lead.phone : "")} · ${calls.length} call${calls.length === 1 ? "" : "s"} logged</span></span>
       </div>
       <div class="iphone-body"><div class="chat-thread iphone-thread">
         ${calls.map((c) => `<div class="im-sys">Call — ${esc(callLabel(c.outcome))} · ${esc(c.date)} · ${esc(c.time)}</div>`).join("")}
@@ -1389,7 +1454,15 @@ function renderCallLog() {
       <input id="phone-search" type="text" placeholder="Search" value="${esc(phoneSearch)}" autocomplete="off" aria-label="Search conversations">
       <button type="button" class="iphone-search-clear" id="phone-search-clear" aria-label="Clear search" style="display:${phoneSearch ? "flex" : "none"}">×</button>
     </div>`;
-  const rows = leads.map((l) => ({lead: l, act: latestActivityFor(l.id)}))
+  // Deleted leads still appear (delete safeguard, 2026-11-21): their
+  // call history was NOT deleted, so the list shows them under the name
+  // stored on their history, with no "New" dot and no phone line.
+  const orphanIds = [...new Set([
+    ...(state.callLogs || []).map((c) => c.leadId),
+    ...(state.conversations || []).map((c) => c.leadId),
+  ])].filter((id) => !leads.some((l) => l.id === id));
+  const orphanLeads = orphanIds.map((id) => ({id, business: leadNameFor(id), phone: "", stage: "Deleted"}));
+  const rows = [...leads, ...orphanLeads].map((l) => ({lead: l, act: latestActivityFor(l.id)}))
     .sort((a, b) => (b.act ? b.act.at : 0) - (a.act ? a.act.at : 0));
   const list = `
       <div class="conv-list">${rows.map(({lead: l, act}) => {
@@ -1702,13 +1775,26 @@ function computeAnalytics(st, repCalls, range, nowMs) {
   const outCounts = {};
   calls.forEach((c) => { outCounts[c.outcome] = (outCounts[c.outcome] || 0) + 1; });
   const outcomes = Object.keys(outCounts).map((o) => ({outcome: o, label: callLabel(o), count: outCounts[o], pct: dials ? Math.round((outCounts[o] / dials) * 1000) / 10 : 0})).sort((a, b) => b.count - a.count);
-  // Per lead (in range), most dialled first.
-  const perLead = (st.leads || []).map((l) => {
+  // Per lead (in range), most dialled first. Deleted leads are NOT
+  // dropped (delete safeguard, 2026-11-21): their calls still count, and
+  // they appear under the business name stored on the call entry itself,
+  // marked "(deleted)" so the totals stay honest.
+  const livePerLead = (st.leads || []).map((l) => {
     const lc = calls.filter((c) => c.leadId === l.id);
     const sorted = [...lc].sort((a, b) => a.at - b.at);
     const last = sorted[sorted.length - 1];
     return {id: l.id, business: l.business, dials: lc.length, connected: lc.filter(isConn).length, lastOutcome: last ? callLabel(last.outcome) : null, meetings: lc.filter((c) => c.outcome === "meeting_booked").length};
-  }).sort((a, b) => b.dials - a.dials || (a.business < b.business ? -1 : 1));
+  });
+  const orphanLeadIds = [...new Set(calls.map((c) => c.leadId))].filter((id) => !(st.leads || []).some((l) => l.id === id));
+  const orphanPerLead = orphanLeadIds.map((id) => {
+    const lc = calls.filter((c) => c.leadId === id);
+    const sorted = [...lc].sort((a, b) => a.at - b.at);
+    const last = sorted[sorted.length - 1];
+    const name = (last && last.leadName) || (lc[0] && lc[0].leadName) || "Deleted lead";
+    return {id, business: name + " (deleted)", dials: lc.length, connected: lc.filter(isConn).length, lastOutcome: last ? callLabel(last.outcome) : null, meetings: lc.filter((c) => c.outcome === "meeting_booked").length};
+  });
+  const perLead = [...livePerLead, ...orphanPerLead]
+    .sort((a, b) => b.dials - a.dials || (a.business < b.business ? -1 : 1));
   // Per rep (in range) — all three, zeros and all.
   const perRep = ANALYTICS_REPS.map((r) => {
     const rc = calls.filter((c) => c.by === r.username);

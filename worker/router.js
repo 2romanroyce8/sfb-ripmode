@@ -757,32 +757,51 @@ async function handleApi(request, env) {
         stage: "New",
       });
     } else if (op === "deleteLead") {
+      // Delete safeguard (2026-11-21): deleting a lead must be confirmed
+      // AND must never delete history. Rome deleted Jax + Performance
+      // himself thinking they were fake, and the old delete wiped their
+      // callLogs/conversations too — 3 real Dialed calls were lost for
+      // good. So: (1) the server refuses any delete without
+      // confirmed:true — a stray click or console call cannot delete
+      // silently; (2) ONLY the lead record is removed. callLogs,
+      // conversations, meetings, followUps and sessionStats are untouched,
+      // and the Call Log / Analytics render orphaned entries by the
+      // business name stored on the entry itself (see logDisposition /
+      // addMessage below).
+      if (body.confirmed !== true) return err("Delete not confirmed — send confirmed:true to delete a lead.", 400);
       s.leads = s.leads.filter((l) => l.id !== body.leadId);
-      s.callLogs = s.callLogs.filter((c) => c.leadId !== body.leadId);
-      s.conversations = s.conversations.filter((c) => c.leadId !== body.leadId);
     } else if (op === "setStage") {
       const l = s.leads.find((x) => x.id === body.leadId);
       if (l && ["New", "In conversation", "Proposal", "Won", "Lost"].includes(body.stage)) l.stage = body.stage;
     } else if (op === "logDisposition") {
-      s.callLogs.push({ id: "call-" + crypto.randomUUID().slice(0, 8), leadId: body.leadId, outcome: String(body.outcome || ""), date, time, by: username });
+      // The business name is stored on the entry itself (delete safeguard,
+      // 2026-11-21): if the lead is later deleted, its history stays
+      // readable in the Call Log / Analytics instead of going blank.
+      const l0 = s.leads.find((x) => x.id === body.leadId);
+      s.callLogs.push({ id: "call-" + crypto.randomUUID().slice(0, 8), leadId: body.leadId, leadName: l0 ? l0.business : "", outcome: String(body.outcome || ""), date, time, by: username });
       if (body.stat) s.sessionStats[body.stat] = (s.sessionStats[body.stat] || 0) + 1;
       if (body.stat && body.stat !== "dials") s.sessionStats.dials = (s.sessionStats.dials || 0) + 1;
     } else if (op === "bookMeeting") {
       const l = s.leads.find((x) => x.id === body.leadId);
       s.meetings.push({
         id: "mtg-" + crypto.randomUUID().slice(0, 8),
-        leadId: body.leadId,
+        leadId: body.leadId, leadName: l ? l.business : "",
         date: body.date || date, time: body.time || time,
         typeName: body.typeName || "30 min meeting", by: username,
       });
       s.sessionStats.meetings = (s.sessionStats.meetings || 0) + 1;
       if (l && l.stage === "New") l.stage = "In conversation";
-      s.callLogs.push({ id: "call-" + crypto.randomUUID().slice(0, 8), leadId: body.leadId, outcome: "meeting_booked", date, time, by: username });
+      s.callLogs.push({ id: "call-" + crypto.randomUUID().slice(0, 8), leadId: body.leadId, leadName: l ? l.business : "", outcome: "meeting_booked", date, time, by: username });
       s.followUps.push({ id: "fu-" + crypto.randomUUID().slice(0, 8), leadId: body.leadId, kind: "email", status: "queued", note: "Meeting confirmation email — queued until Resend is wired.", date, time });
       s.followUps.push({ id: "fu-" + crypto.randomUUID().slice(0, 8), leadId: body.leadId, kind: "sms", status: "pending", note: "Meeting confirmation SMS — send via Google Voice (not sent automatically).", date, time });
     } else if (op === "addMessage") {
+      // leadName stored on the conversation (delete safeguard, 2026-11-21)
+      // so a deleted lead's thread stays readable; backfilled for older
+      // conversations that were created before this field existed.
+      const lMsg = s.leads.find((x) => x.id === body.leadId);
       let conv = s.conversations.find((c) => c.leadId === body.leadId);
-      if (!conv) { conv = { leadId: body.leadId, messages: [] }; s.conversations.push(conv); }
+      if (!conv) { conv = { leadId: body.leadId, leadName: lMsg ? lMsg.business : "", messages: [] }; s.conversations.push(conv); }
+      if (!conv.leadName && lMsg) conv.leadName = lMsg.business;
       conv.messages.push({ id: "msg-" + crypto.randomUUID().slice(0, 8), from: body.from === "lead" ? "lead" : "me", text: String(body.text || "").slice(0, 2000), date, time });
     } else {
       return err("Unknown operation.");

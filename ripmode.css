@@ -315,3 +315,9 @@ html:has(.shell[data-appearance="light"]) .iphone-head-name b{color:#fff}
 .an-bar-val{text-align:right;font-weight:700;white-space:nowrap}
 .an-bar-sub{color:var(--muted);font-weight:400;font-size:12px}
 @media(max-width:560px){.an-bar-row{grid-template-columns:86px 1fr 72px}}
+
+/* Delete confirm modal (2026-11-21 safeguard): overlay + centred card in
+   the template's own .card / .btn language. Same block in style.css. */
+.confirm-overlay{position:fixed;inset:0;background:rgba(0,0,0,.6);display:flex;align-items:center;justify-content:center;z-index:200;padding:16px;box-sizing:border-box}
+.confirm-card{max-width:420px;width:100%;margin:0}
+.confirm-card p{margin:8px 0}

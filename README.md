@@ -1027,3 +1027,58 @@ Leads + Pipeline. Match by email, then business name. Paid invoice ->
 Won, with amount + PaymentIntent ID + Stripe event ID on the deal.
 Sent/open invoice -> Proposal. Duplicate Stripe events are no-ops.
 See ~/workspace/billme-sync/README.md for setup and the deploy note.
+
+## Delete safeguard (2026-11-21, v=18)
+
+Rome deleted Jax Roofing + Performance Roofing himself, thinking they
+were fake. They were real — and the old deleteLead wiped the lead AND
+its callLogs/conversations, so the 3 real Dialed calls he had logged
+for Jax (Nov 20, 2:26/2:27/2:30 PM) are unrecoverable: no backup
+existed, and only the session totals (dials 4, connected 1) survived.
+Both leads were re-added fresh (stage New, no history) and the dialer
+now holds 46 leads. A delete can never do that again:
+
+1. CONFIRM FIRST (client + server). The Delete button opens an in-app
+   confirm modal in the template's own .card/.btn language — "Delete
+   this lead?" + the business name + "Its call history stays in the
+   Call Log." — with Cancel and "Delete lead". Cancel, Escape, or
+   clicking the backdrop closes it and deletes nothing. There is no
+   native confirm() call left in app.js, and no single-click delete.
+   The server ALSO refuses any deleteLead without confirmed:true
+   (400 "Delete not confirmed"), so a stray click or a console call
+   cannot delete silently.
+2. HISTORY SURVIVES THE DELETE (server-side, the core fix).
+   deleteLead now removes ONLY the lead record. callLogs,
+   conversations, meetings, followUps and sessionStats are untouched.
+   Every history write stamps the business name on the entry itself
+   (leadName on call logs incl. the meeting_booked entry, on
+   conversations, and on meetings) so orphaned history stays readable.
+3. ORPHANED HISTORY STILL RENDERS. The Call Log list shows a deleted
+   lead's entries under its stored name (no "New" dot, no phone line);
+   its thread still opens with its calls + messages; the Calendar's
+   booked-meetings list uses the stored meeting name; Analytics keeps
+   the deleted lead as a per-lead row marked "(deleted)" and its calls
+   still count in every total. Nothing renders blank, nothing crashes,
+   no row is dropped.
+
+What a delete still does: removes the lead from Leads, Pipeline and
+the RIP MODE rotation only. Nothing else changes — adding/editing
+leads, calling, outcome logging, caps, BillMe sync and the AI Rep tab
+are untouched.
+
+VERIFIED: Node harness (/tmp/delete-safeguard-harness.mjs) 44/44 against
+the real worker/standalone.js + real app.js — unconfirmed delete 400s
+with zero state change (missing flag and explicit confirmed:false),
+confirmed delete removes only the lead, callLogs/conversations/
+meetings/followUps/sessionStats byte-identical before/after, leadName
+stored by logDisposition/addMessage/bookMeeting, no-history delete
+works the same way, caps endpoint alive, BillMe sync still 401s
+without the secret and changes no state, Call Log list + thread +
+Analytics render a deleted lead by its stored name with its calls
+counted, modal opens on click / Cancel / Escape / backdrop all delete
+nothing, Confirm sends exactly one deleteLead with confirmed:true,
+no native confirm() remains. `node --check` clean on app.js,
+router.js and the regenerated worker/standalone.js (v=18). Live KV
+backed up before any work (state-backup-20261121T081940Z.json: 46
+leads, 0 callLogs, dials 4 / connected 1) and untouched by this change
+— the harness ran against an in-memory KV, never live state.
