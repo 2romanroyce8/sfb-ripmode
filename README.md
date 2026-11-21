@@ -1,7 +1,7 @@
 # RIP MODE — SFB Connect Dialer (standalone)
 
 Live app: https://sfb-ripmode-router.2romanroyce8.workers.dev
-Target URL (needs one dashboard step, see below): https://sixfigureblueprints.com/ripmode
+Live URL: https://sixfigureblueprints.com/salesteam (/ripmode 301-redirects to it since 2026-11-21)
 
 ## What it is
 Standalone RIP MODE dialer — login, RIP MODE, Leads, 5-stage Pipeline,
@@ -46,13 +46,17 @@ Cal.com-mirrored Calendar, Call Log + conversations, Connections.
   step in the Cloudflare dashboard (see below). The worker is already live
   on its workers.dev URL.
 
-## One step to go live at sixfigureblueprints.com/ripmode
+## Live at sixfigureblueprints.com/salesteam (routes added 2026-11-21)
 In the Cloudflare dashboard: Workers & Pages -> sfb-ripmode-router ->
-Settings -> Triggers -> Add route, add BOTH patterns:
+Settings -> Triggers -> Add route. FOUR patterns exist (both prefixes):
+- sixfigureblueprints.com/salesteam
+- sixfigureblueprints.com/salesteam/*
 - sixfigureblueprints.com/ripmode
 - sixfigureblueprints.com/ripmode/*
 (More specific routes win over the homepage worker's /* catch-all, same as
-the /billme router.) No code or DNS change needed.
+the /billme router.) The worker 301-redirects page GETs from /ripmode to
+/salesteam; /ripmode/api/* is NEVER redirected (the BillMe bridge POSTs to
+/ripmode/api/billme/sync). No code or DNS change needed to add a route.
 
 ## Files
 - index.html / app.js / style.css — the app (also embedded in worker/standalone.js)
@@ -1106,15 +1110,30 @@ by: username on every bookMeeting). Booking payload unchanged
 (bookMeeting {leadId, date, time, typeName}); "Book on Cal.com" opens the
 selected type's real link.
 
-/SALESTEAM — CODE-READY ONLY, NO REDIRECT. The worker serves the whole app
+/SALESTEAM — CODE-READY in v19; routes + redirect DONE 2026-11-21 (see
+"/ripmode → /salesteam redirect" below). The worker serves the whole app
 (page, assets, ALL API routes incl. /api/billme/sync) under BOTH /ripmode/*
 and /salesteam/* with identical behavior; served asset URLs use the prefix
-the request came in on; sessions/caps work across both prefixes. NO
-redirect was added — the Cloudflare routes for /salesteam do not exist yet
-(parent adds them via the dashboard UI; the API token cannot create
-routes). Live sixfigureblueprints.com/salesteam still 404s until then;
-/ripmode works exactly as before. BillMe bridge still posts to
-/ripmode/api/billme/sync — unchanged.
+the request came in on; sessions/caps work across both prefixes. BillMe
+bridge still posts to /ripmode/api/billme/sync — unchanged.
+
+## /ripmode → /salesteam redirect (2026-11-21)
+Routes sixfigureblueprints.com/salesteam + /salesteam/* added in the
+Cloudflare dashboard (verified 200 before this deploy), then the worker
+got the redirect: any GET to /ripmode or /ripmode/<anything> that is NOT
+under /ripmode/api/* 301-redirects to the same path under /salesteam
+(query string preserved). NEVER redirected: anything under /ripmode/api/*
+(GET or POST — the BillMe bridge POSTs to /ripmode/api/billme/sync),
+any non-GET request, the workers.dev host, /salesteam itself. Verified
+live: GET /ripmode → 301 → /salesteam; GET /ripmode/api/billme/sync → 401;
+POST /ripmode/api/billme/sync (bad secret) → 401; GET /salesteam → 200
+with /salesteam/ asset refs; served app.js/style.css byte-identical to
+local; all 7 bindings present after deploy; live KV untouched (46 leads,
+0 callLogs, dials 4 / connected 1). Known route-level quirk (unchanged):
+any URL with a query string (/salesteam?x=1, /ripmode?x=1) 404s before
+reaching the worker — the Cloudflare routes never deliver a query-string
+URL to this worker. The login has no <form>, so Enter can never produce
+one; never bookmark a link with `?` in it.
 
 CALL LOG — mock iPad (not iPhone): iPad proportions/bezel, camera dot in
 the top bezel, no Dynamic Island; Messages in real iPad layout, list LEFT,

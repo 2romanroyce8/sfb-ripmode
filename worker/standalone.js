@@ -1022,14 +1022,22 @@ async function handleApi(request, env) {
 export default {
   async fetch(request, env) {
     const incoming = new URL(request.url);
-    // Prefix-aware serving (2026-11-21): the app lives at /ripmode AND
-    // /salesteam, identical behavior, same KV state, same sessions (tokens
-    // are not bound to the path). NO redirect in this deploy — the
-    // /salesteam Cloudflare routes do not exist yet, so a redirect would
-    // send users to a 404. The redirect comes as a separate step after
-    // the routes are added. Asset URLs in the served HTML use the prefix
+    // Prefix-aware serving (2026-11-21): the app lives at /salesteam; /ripmode
+    // now 301-redirects to it (routes exist — verified 200 before this deploy).
+    // Redirect is page GETs only: never /api/* (the BillMe bridge POSTs to
+    // /ripmode/api/billme/sync), never non-GET, never the workers.dev host,
+    // never /salesteam itself. Asset URLs in the served HTML use the prefix
     // the request came in on.
     const pfx = incoming.pathname;
+    // /ripmode → /salesteam redirect (2026-11-21). Page GETs only.
+    const onCustomDomain = incoming.hostname === "sixfigureblueprints.com" ||
+      incoming.hostname === "www.sixfigureblueprints.com";
+    const isRipmodePage = pfx === "/ripmode" || pfx.startsWith("/ripmode/");
+    const isRipmodeApi = pfx === "/ripmode/api" || pfx.startsWith("/ripmode/api/");
+    if (onCustomDomain && request.method === "GET" && isRipmodePage && !isRipmodeApi) {
+      const rest = pfx.slice("/ripmode".length); // "" or "/..." (incl. /app.js, /style.css)
+      return Response.redirect("https://sixfigureblueprints.com/salesteam" + rest + incoming.search, 301);
+    }
     const prefix = pfx === "/salesteam" || pfx.startsWith("/salesteam/") ? "/salesteam" : "/ripmode";
     const isApi = pfx === prefix + "/api" || pfx.startsWith(prefix + "/api/") ||
       pfx === "/api" || pfx.startsWith("/api/");

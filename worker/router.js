@@ -1022,10 +1022,21 @@ async function handleApi(request, env) {
 export default {
   async fetch(request, env) {
     const incoming = new URL(request.url);
-    // Prefix-aware (2026-11-21): the app lives at /ripmode AND /salesteam.
-    // NO redirect — /salesteam routes do not exist on the zone yet, so a
-    // redirect would 404. Both prefixes serve identically.
+    // Prefix-aware (2026-11-21): the app lives at /salesteam; /ripmode
+    // 301-redirects to it (routes exist — verified 200 before this deploy).
+    // Redirect is page GETs only: never /api/* (the BillMe bridge POSTs to
+    // /ripmode/api/billme/sync), never non-GET, never the workers.dev host,
+    // never /salesteam itself. Both prefixes serve identically.
     const p = incoming.pathname;
+    // /ripmode → /salesteam redirect (2026-11-21). Page GETs only.
+    const onCustomDomain = incoming.hostname === "sixfigureblueprints.com" ||
+      incoming.hostname === "www.sixfigureblueprints.com";
+    const isRipmodePage = p === "/ripmode" || p.startsWith("/ripmode/");
+    const isRipmodeApi = p === "/ripmode/api" || p.startsWith("/ripmode/api/");
+    if (onCustomDomain && request.method === "GET" && isRipmodePage && !isRipmodeApi) {
+      const rest = p.slice("/ripmode".length); // "" or "/..." (incl. /app.js, /style.css)
+      return Response.redirect("https://sixfigureblueprints.com/salesteam" + rest + incoming.search, 301);
+    }
     const isApi = p === "/ripmode/api" || p.startsWith("/ripmode/api/") ||
       p === "/salesteam/api" || p.startsWith("/salesteam/api/") ||
       p === "/api" || p.startsWith("/api/");
