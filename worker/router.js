@@ -153,6 +153,184 @@ async function newSession(env, username) {
   return token;
 }
 
+// ---- BillMe sync (inlined from ~/workspace/billme-sync/worker/billme-sync.js) ----
+// POST /api/billme/sync — server-to-server, shared secret BILLME_SYNC_SECRET.
+// Helpers json/err/enc/hex/sha256Hex are NOT duplicated here: router.js
+// already defines them (json() also carries the CORS headers).
+const MAX_BILLME_EVENTS = 500;
+
+
+
+
+
+// Compare the presented secret against the stored one by comparing SHA-256
+// digests (no timing leak on the raw value, and the raw secret never leaves
+// the comparison).
+async function checkSyncSecret(env, request) {
+  const secret = env.BILLME_SYNC_SECRET || "";
+  if (!secret) return false;
+  const auth = request.headers.get("Authorization") || "";
+  const m = auth.match(/^Bearer\s+(.+)$/);
+  if (!m) return false;
+  const [a, b] = await Promise.all([sha256Hex(m[1]), sha256Hex(secret)]);
+  if (a.length !== b.length) return false;
+  let diff = 0;
+  for (let i = 0; i < a.length; i++) diff |= a.charCodeAt(i) ^ b.charCodeAt(i);
+  return diff === 0;
+}
+
+function normEmail(e) {
+  return String(e || "").trim().toLowerCase();
+}
+function normName(n) {
+  return String(n || "").trim().toLowerCase();
+}
+
+// Find the lead this invoice belongs to: email first, then business name.
+// Returns null when there is no identifier to match on.
+function findLead(state, email, business) {
+  const e = normEmail(email);
+  const b = normName(business);
+  if (e) {
+    const byEmail = (state.leads || []).find((l) => normEmail(l.email) === e);
+    if (byEmail) return byEmail;
+  }
+  if (b) {
+    const byName = (state.leads || []).find((l) => normName(l.business) === b);
+    if (byName) return byName;
+  }
+  return null;
+}
+
+function money(amountCents, currency) {
+  const n = (amountCents || 0) / 100;
+  try {
+    return new Intl.NumberFormat("en-US", {
+      style: "currency", currency: (currency || "usd").toUpperCase(),
+    }).format(n);
+  } catch (_) {
+    return "$" + n.toFixed(2);
+  }
+}
+
+// The upsert itself — pure over the state object so the harness can test it
+// without a worker. Returns {createdLead, stage, duplicate, matched}.
+function applyBillmeSync(state, body) {
+  const stripeEventId = String(body.stripeEventId || "");
+  const email = normEmail(body.email);
+  const business = String(body.business || "").trim().slice(0, 120);
+  const status = body.status === "paid" ? "paid" : (body.status === "sent" ? "sent" : "open");
+  const amountCents = Number(body.amountCents) || 0;
+  const currency = String(body.currency || "usd").toLowerCase();
+  const invoiceNumber = String(body.invoiceNumber || body.invoiceId || "").slice(0, 60);
+  const invoiceId = String(body.invoiceId || "").slice(0, 60);
+  const paidAt = String(body.paidAt || "");
+  const paymentIntentId = String(body.paymentIntentId || "").slice(0, 60);
+
+  if (!state.billmeEvents) state.billmeEvents = {};
+  if (stripeEventId && state.billmeEvents[stripeEventId]) {
+    return { createdLead: false, stage: null, duplicate: true, matched: true };
+  }
+
+  let lead = findLead(state, email, business);
+  let createdLead = false;
+  if (!lead) {
+    if (!email && !business) return { createdLead: false, stage: null, duplicate: false, matched: false };
+    lead = {
+      id: "lead-" + crypto.randomUUID().slice(0, 8),
+      business: business || email,
+      niche: "",
+      city: "",
+      phone: String(body.phone || "").slice(0, 40),
+      owner: String(body.owner || "").slice(0, 80),
+      email,
+      stage: "New",
+      source: "billme",
+    };
+    state.leads.push(lead);
+    createdLead = true;
+  }
+
+  // Fill in contact facts the sync knows that the lead is missing.
+  if (email && !lead.email) lead.email = email;
+  if (business && (!lead.business || lead.business === lead.email)) lead.business = business;
+  if (body.phone && !lead.phone) lead.phone = String(body.phone).slice(0, 40);
+  if (body.owner && !lead.owner) lead.owner = String(body.owner).slice(0, 80);
+  if (!lead.source) lead.source = "billme";
+
+  const invoice = {
+    id: invoiceId,
+    number: invoiceNumber,
+    status,
+    amountCents,
+    currency,
+    paidAt: status === "paid" ? paidAt : "",
+    paymentIntentId: status === "paid" ? paymentIntentId : "",
+    stripeEventId,
+  };
+  lead.invoice = invoice;
+  if (!Array.isArray(lead.invoiceHistory)) lead.invoiceHistory = [];
+  // One history entry per distinct invoice + status (replays collapse).
+  const histKey = invoiceId + "|" + status;
+  if (!lead.invoiceHistory.some((h) => (h.id || "") + "|" + (h.status || "") === histKey)) {
+    lead.invoiceHistory.push({ ...invoice, at: new Date().toISOString() });
+  }
+  if (!Array.isArray(lead.billmeEventIds)) lead.billmeEventIds = [];
+  if (stripeEventId) lead.billmeEventIds.push(stripeEventId);
+
+  // Stage rule: a paid invoice is Won (payment truth). A sent/open invoice
+  // moves a New lead to Proposal — the deal is live, not yet paid.
+  if (status === "paid") lead.stage = "Won";
+  else if (lead.stage === "New") lead.stage = "Proposal";
+
+  if (stripeEventId) {
+    state.billmeEvents[stripeEventId] = { invoiceId, at: new Date().toISOString() };
+    const keys = Object.keys(state.billmeEvents);
+    if (keys.length > MAX_BILLME_EVENTS) {
+      for (const k of keys.slice(0, keys.length - MAX_BILLME_EVENTS)) delete state.billmeEvents[k];
+    }
+  }
+  return { createdLead, stage: lead.stage, duplicate: false, matched: true };
+}
+
+// Route handler: POST /api/billme/sync.
+// getState/saveState are injected (the router's own functions in production,
+// a mock KV in the harness). Returns a Response.
+async function handleBillmeSync(request, env, getState, saveState) {
+  if (!(await checkSyncSecret(env, request))) {
+    return err("Invalid sync secret.", 401);
+  }
+  const body = await request.json().catch(() => null);
+  if (!body || typeof body !== "object" || Array.isArray(body)) {
+    return err("No invoice data was sent.");
+  }
+  const state = await getState(env);
+  if (!Array.isArray(state.leads)) state.leads = [];
+  const result = applyBillmeSync(state, body);
+  if (result.matched && !result.duplicate) await saveState(env, state);
+  return json({
+    ok: true,
+    matched: result.matched,
+    duplicate: result.duplicate,
+    createdLead: result.createdLead,
+    stage: result.stage,
+    invoice: result.matched && !result.duplicate
+      ? { number: String(body.invoiceNumber || body.invoiceId || ""), status: body.status }
+      : undefined,
+  });
+}
+
+// UI helpers the dashboard uses to render invoice state on a Pipeline card.
+function invoiceLine(lead) {
+  const inv = lead && lead.invoice;
+  if (!inv) return "";
+  const label = inv.status === "paid" ? "Paid" : (inv.status === "sent" ? "Sent" : "Open");
+  const when = inv.status === "paid" && inv.paidAt
+    ? " · " + new Date(inv.paidAt).toLocaleDateString("en-US", { month: "short", day: "numeric", year: "numeric" })
+    : "";
+  return "Invoice " + (inv.number || inv.id || "") + " · " + label + " " + money(inv.amountCents, inv.currency) + when;
+}
+
 async function handleApi(request, env) {
   const url = new URL(request.url);
   let path = url.pathname;
@@ -201,6 +379,15 @@ async function handleApi(request, env) {
     const m = auth.match(/^Bearer\s+(.+)$/);
     if (m) await env.RIPMODE_KV.delete("sessions:" + await sha256Hex(m[1]));
     return json({ ok: true });
+  }
+
+  // ---- BillMe sync (server-to-server; shared secret, no user session) ----
+  // Stripe (via the sfb-billme-bridge worker) posts invoice events here.
+  // The shared secret is held as a SECRET env var BILLME_SYNC_SECRET on
+  // this worker — it is never in code, never in a client bundle, never in
+  // any response. See ~/workspace/billme-sync/README.md.
+  if (path === "/api/billme/sync" && request.method === "POST") {
+    return handleBillmeSync(request, env, getState, saveState);
   }
 
   // ---- state (session required) ----

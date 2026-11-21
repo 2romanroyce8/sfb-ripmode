@@ -19,6 +19,14 @@ This version therefore:
      time (e.g. TWILIO_ACCOUNT_SID=AC... python3 deploy.py) — the ONLY way
      a var value should ever reach this script. Values are never printed.
      Use this to (re-)set a var whose value is known; never invent one.
+  2b. Merges in SECRET vars supplied as environment variables the same way
+     (SECRET_VAR_NAMES below). The upload API rejects a secret binding
+     WITHOUT a text value, so secrets are sent WITH their value here —
+     the script-upload endpoint accepts secret_text bindings that carry
+     text. Secrets already on the worker and NOT supplied here are left
+     out of the metadata and persist independently (proven 2026-11-20:
+     TWILIO_API_KEY_SECRET survived the v=10 deploy that wiped the
+     plain-text vars). Secret VALUES are never printed.
   3. Prints only binding NAMES (never values) so the log proves what was
      preserved.
 
@@ -48,6 +56,12 @@ PLAIN_VAR_NAMES = [
     "TWILIO_ACCOUNT_SID",
     "TWILIO_API_KEY_SID",
     "TWILIO_TWIML_APP_SID",
+]
+
+# Secret var names this worker is allowed to carry. Values come ONLY from
+# the environment at deploy time — never hardcode one here, never print one.
+SECRET_VAR_NAMES = [
+    "BILLME_SYNC_SECRET",
 ]
 
 BASE = f"https://api.cloudflare.com/client/v4/accounts/{ACCOUNT}"
@@ -84,6 +98,13 @@ def main():
         if value:
             by_name[name] = {"type": "plain_text", "name": name, "text": value}
             print(f"Setting plain-text var from environment: {name}")
+
+    # 2b. Merge secret vars supplied via the environment (values never logged).
+    for name in SECRET_VAR_NAMES:
+        value = os.environ.get(name)
+        if value:
+            by_name[name] = {"type": "secret_text", "name": name, "text": value}
+            print(f"Setting secret var from environment: {name}")
 
     # 3. Ensure the KV binding is present.
     if "RIPMODE_KV" not in by_name:

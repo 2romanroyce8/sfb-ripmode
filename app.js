@@ -81,6 +81,12 @@ let callAudioCtx = null, callAnalyser = null, callAnalyserRAF = null, analyserSo
 
 const $ = (s) => document.querySelector(s);
 const esc = (s) => String(s ?? "").replace(/[&<>"']/g, (c) => ({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;","'":"&#39;"}[c]));
+function money(amountCents, currency) {
+  const n = (amountCents || 0) / 100;
+  try {
+    return new Intl.NumberFormat("en-US", { style: "currency", currency: (currency || "usd").toUpperCase() }).format(n);
+  } catch (_) { return "$" + n.toFixed(2); }
+}
 const fmtPhone = (p) => p || "";
 const todayStr = () => new Date().toLocaleDateString("en-US", {month:"short", day:"numeric", year:"numeric"});
 const nowTime = () => new Date().toLocaleTimeString("en-US", {hour:"numeric", minute:"2-digit"});
@@ -1017,6 +1023,8 @@ function renderPipeline() {
       <div class="pcard"><b>${esc(l.business)}</b>
         <div class="meta">${esc(l.niche || "")} · ${esc(l.phone)}</div>
         <div class="meta">${esc(l.owner || "no name on file")}</div>
+        ${l.invoice ? `<div class="meta">Invoice ${esc(l.invoice.number || l.invoice.id || "")} · ${l.invoice.status === "paid" ? "Paid" : (l.invoice.status === "sent" ? "Sent" : "Open")} ${money(l.invoice.amountCents, l.invoice.currency)}${l.invoice.status === "paid" && l.invoice.paidAt ? " · " + esc(new Date(l.invoice.paidAt).toLocaleDateString("en-US", { month: "short", day: "numeric", year: "numeric" })) : ""}</div>` : ""}
+        ${l.source === "billme" ? `<div class="meta">via BillMe</div>` : ""}
         <div style="display:flex;gap:6px;margin-top:8px">
           <button class="btn" data-move="${l.id}|-1" ${STAGES.indexOf(l.stage || "New") === 0 ? "disabled" : ""}>←</button>
           <select class="select" data-stagepick="${l.id}" style="flex:1">${STAGES.map((s) => `<option ${s === (l.stage || "New") ? "selected" : ""}>${s}</option>`).join("")}</select>

@@ -904,3 +904,13 @@ Live: /ripmode 200, served app.js?v=15 and style.css?v=15
 byte-identical to local (sha256 match), Analytics nav present, zero
 occurrences of Rome's personal number in all served files.
 NO NUMBER DIALED. No account touched.
+
+## BillMe sync
+
+BillMe invoices sync into this CRM via Stripe webhooks (test mode).
+Stripe -> sfb-billme-bridge worker (signature-verified) -> POST
+/api/billme/sync (shared secret BILLME_SYNC_SECRET, secret env var) ->
+Leads + Pipeline. Match by email, then business name. Paid invoice ->
+Won, with amount + PaymentIntent ID + Stripe event ID on the deal.
+Sent/open invoice -> Proposal. Duplicate Stripe events are no-ops.
+See ~/workspace/billme-sync/README.md for setup and the deploy note.
