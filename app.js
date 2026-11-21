@@ -79,6 +79,100 @@ let isTestCall = false;
 let testNumberDraft = "";
 let callAudioCtx = null, callAnalyser = null, callAnalyserRAF = null, analyserSource = null; // "standalone" | "call"
 
+/* ---------- Daily caps (2026-11-21) ----------
+   Team caps + per-person caps (equal split, 3 members), reset at
+   midnight America/New_York. The WORKER is the authority — every dial,
+   talk second and email is checked server-side, so the browser can
+   never bypass a cap from the console. The client only reads the
+   numbers (GET /api/caps), reserves a dial before dialling
+   (POST /api/caps/dial), and reports connected seconds when a call
+   ends (POST /api/caps/call-end).
+   Team: 500 dials, 150 talk min, 100 texts, 100 emails/day.
+   Each person: 167 dials, 50 talk min, 33 texts, 33 emails/day.
+   167x3 = 501, so the team 500 caps first — intended.
+   Texts are sent by the receptionist as the system (no user
+   attribution), so the texts row shows the TEAM line only — never
+   invented per-person text numbers.
+   Per-call max 3:45 (225s), warning at 3:00, auto-end at 3:45. */
+const CAPS_DEFAULT_LIMITS = {
+  team: { dials: 500, talkMin: 150, sms: 100, emails: 100, maxCallSec: 225 },
+  users: {
+    romanroyce: { dials: 167, talkMin: 50, sms: 33, emails: 33 },
+    loganwells: { dials: 167, talkMin: 50, sms: 33, emails: 33 },
+    braylengarrett: { dials: 167, talkMin: 50, sms: 33, emails: 33 },
+  },
+};
+const CAPS_USERS = [
+  { username: "romanroyce", name: "Roman Royce" },
+  { username: "loganwells", name: "Logan Wells" },
+  { username: "braylengarrett", name: "Braylen Garrett" },
+];
+let capsData = null;
+let capsCutoff = false;
+function capsLimits() { return (capsData && capsData.limits) || CAPS_DEFAULT_LIMITS; }
+function capsTeam() { return (capsData && capsData.team) || { dials: 0, talkSec: 0, emails: 0, sms: null }; }
+function capsMine() { return (capsData && capsData.mine) || { dials: 0, talkSec: 0, emails: 0 }; }
+function capsMyLimits() { const l = capsLimits(); return (l.users && l.users[me]) || l.users.romanroyce; }
+function capsMaxCallSec() { const t = capsLimits().team; return (t && t.maxCallSec) || 225; }
+function capsTalkMin(sec) { const m = (sec || 0) / 60; return String(Math.round(m * 10) / 10); }
+function capsCutoffNote() {
+  const max = capsMaxCallSec();
+  return max === 225 ? "Call ended at the 3:45 daily-limit cutoff." : "Call ended at the " + fmtElapsed(max) + " daily-limit cutoff.";
+}
+function capsBlockedReason() {
+  if (!capsData) return "";
+  const t = capsTeam(), m = capsMine(), tl = capsLimits().team, ul = capsMyLimits();
+  if (t.dials >= tl.dials) return "Team daily limit reached — " + t.dials + "/" + tl.dials + " dials. Resets midnight ET.";
+  if (m.dials >= ul.dials) return "Your daily limit reached — " + m.dials + "/" + ul.dials + " dials. Resets midnight ET.";
+  if (t.talkSec >= tl.talkMin * 60) return "Team daily talk limit reached — " + Math.floor(t.talkSec / 60) + "/" + tl.talkMin + " minutes. Resets midnight ET.";
+  if (m.talkSec >= ul.talkMin * 60) return "Your daily talk limit reached — " + Math.floor(m.talkSec / 60) + "/" + ul.talkMin + " minutes. Resets midnight ET.";
+  return "";
+}
+async function loadCaps() {
+  try { capsData = await api("/caps", "GET"); } catch (e) { capsData = null; }
+  updateCapsDom();
+  syncCallUI();
+}
+// One progress-bar row: label, used label, numeric used/limit for the bar.
+function capsBarRow(label, usedLabel, usedNum, limitNum, limitLabel) {
+  const pct = limitNum > 0 ? Math.min(100, Math.round((usedNum / limitNum) * 100)) : 0;
+  const over = usedNum >= limitNum;
+  return `<div class="an-bar-row"><span class="an-bar-label">${esc(label)}</span><span class="an-bar-track"><span class="an-bar-fill" style="width:${pct}%;${over ? "background:#ff453a" : ""}"></span></span><span class="an-bar-val">${esc(usedLabel)} / ${esc(limitLabel)}</span></div>`;
+}
+function capsRowsHtml() {
+  const t = capsTeam(), m = capsMine(), tl = capsLimits().team, ul = capsMyLimits();
+  const smsUsed = (t.sms === null || t.sms === undefined) ? "—" : String(t.sms);
+  const smsNum = (typeof t.sms === "number") ? t.sms : 0;
+  const talkCost = "$" + ((t.talkSec / 60) * OUTBOUND_COST_PER_MIN).toFixed(2);
+  const recep = (capsData && capsData.receptionistMinutes !== null && capsData.receptionistMinutes !== undefined)
+    ? "Receptionist today: " + capsData.receptionistMinutes + " min · ≈ $" + (capsData.receptionistCostEst !== null && capsData.receptionistCostEst !== undefined ? capsData.receptionistCostEst.toFixed(2) : "?") + " (est.)"
+    : "Receptionist minutes today: not available right now.";
+  return `
+    ${capsBarRow("Dials — you", String(m.dials), m.dials, ul.dials, String(ul.dials))}
+    ${capsBarRow("Dials — team", String(t.dials), t.dials, tl.dials, String(tl.dials))}
+    ${capsBarRow("Talk — you", capsTalkMin(m.talkSec) + " min", m.talkSec / 60, ul.talkMin, ul.talkMin + " min")}
+    ${capsBarRow("Talk — team", capsTalkMin(t.talkSec) + " min", t.talkSec / 60, tl.talkMin, tl.talkMin + " min")}
+    ${capsBarRow("Texts — team", smsUsed, smsNum, tl.sms, String(tl.sms))}
+    <p class="caps-note">Texts are system-sent, shared by the team — no per-person count.${capsData && capsData.smsNote ? " " + esc(capsData.smsNote) : ""}</p>
+    ${capsBarRow("Emails — you", String(m.emails), m.emails, ul.emails, String(ul.emails))}
+    ${capsBarRow("Emails — team", String(t.emails), t.emails, tl.emails, String(tl.emails))}
+    ${t.emails === 0 ? `<p class="caps-note">No emails sent yet — Resend not wired.</p>` : ""}
+    <p class="caps-note">Outbound talk today ≈ ${talkCost} (est.) · ${esc(recep)} · Inbound receptionist calls are not capped — minutes and cost are shown so spend stays visible. Resets midnight ET.</p>`;
+}
+function capsStripHtml() {
+  if (!capsData) return `<div class="card caps-strip" id="caps-strip"><div class="section-title" style="margin-top:0">Daily limits</div><div class="notice">Loading today's limits…</div></div>`;
+  return `<div class="card caps-strip" id="caps-strip"><div class="section-title" style="margin-top:0">Daily limits — resets midnight ET</div>${capsRowsHtml()}</div>`;
+}
+// In-place refresh of the RIP strip (no full re-render, so a live call's
+// DOM is never rebuilt under it). The Analytics card is refreshed by
+// render() when that tab loads; its form is never wiped mid-edit.
+function updateCapsDom() {
+  const el = $("#caps-strip");
+  if (el && capsData) {
+    try { el.outerHTML = capsStripHtml(); } catch (_) {}
+  }
+}
+
 const $ = (s) => document.querySelector(s);
 const esc = (s) => String(s ?? "").replace(/[&<>"']/g, (c) => ({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;","'":"&#39;"}[c]));
 function money(amountCents, currency) {
@@ -143,6 +237,7 @@ function showDashboard() {
   $("#create-workspace").classList.toggle("hidden", !isOwner);
   updateNav();
   checkTwilio(); // fire-and-forget: decides CALL (Twilio vs Google Voice fallback)
+  loadCaps(); // fire-and-forget: today's team + per-person limits for the strip
 }
 
 async function checkSession() {
@@ -273,6 +368,18 @@ function callOutcomeFor(o) {
   return { outcome: "no_answer", stat: "noAnswer" };
 }
 function callStatusLine() {
+  // Per-call cutoff warning (2026-11-21): from 3:00 into a connected call,
+  // the status line warns the call ends at the daily-limit cutoff. The
+  // exact 3:45 wording is used at the default 225s max; a changed max
+  // shows the real remaining seconds instead.
+  if (callState === "connected") {
+    const elapsed = callElapsed(), maxSec = capsMaxCallSec();
+    if (elapsed >= 180 && elapsed < maxSec) {
+      return maxSec === 225
+        ? "30 seconds left — this call ends at 3:45"
+        : "This call ends at " + fmtElapsed(maxSec) + " — " + Math.max(0, Math.round(maxSec - elapsed)) + " seconds left.";
+    }
+  }
   // Test calls never echo the typed number in the status line — the number
   // is visible only in the input box Rome typed it into.
   if (isTestCall) {
@@ -293,22 +400,36 @@ function callStatusLine() {
 function syncCallUI() {
   const pill = $("#call-state");
   if (pill) pill.textContent = callStateLabel(callState, callElapsed());
+  const blocked = capsBlockedReason();
   const btn = $("#call-btn");
   if (btn) {
     const active = callState !== "idle";
     btn.textContent = active ? "END CALL" : "CALL";
     btn.classList.toggle("end", active);
+    // A cap hit disables CALL (lead calls) — the server is still the
+    // authority; this is only the visible half. END CALL stays enabled.
+    btn.disabled = !active && !!blocked;
   }
   const tbtn = $("#test-call-btn");
-  if (tbtn) tbtn.textContent = (callState !== "idle" && isTestCall) ? "END CALL" : "CALL";
+  if (tbtn) {
+    tbtn.textContent = (callState !== "idle" && isTestCall) ? "END CALL" : "CALL";
+    tbtn.disabled = callState === "idle" && !!blocked;
+  }
+  const note = $("#caps-block-note");
+  if (note) { note.textContent = blocked; note.classList.toggle("hidden", !blocked); }
   const line = $("#call-status-line");
   if (line) { line.textContent = callStatusLine(); line.classList.toggle("hidden", !line.textContent); }
 }
 function setCallState(s) { callState = s; syncCallUI(); }
 function startCallTimer() {
   stopCallTimer();
+  capsCutoff = false;
   callTimerId = setInterval(() => {
     if (callState !== "connected") return;
+    // Per-call cutoff (2026-11-21): at the daily-limit max (default
+    // 3:45) the call ends via endCall("local") — the ended call keeps
+    // its real outcome (connected), never mislabelled no-answer.
+    if (callElapsed() >= capsMaxCallSec()) { capsCutoff = true; endCall("local"); return; }
     const st = $("#call-state");
     if (st) st.textContent = callStateLabel("connected", callElapsed());
     const line = $("#call-status-line");
@@ -441,6 +562,24 @@ async function startTwilioCallTo(to, opts) {
   isTestCall = isTest;
   connectCancelled = false;
   callAccepted = false; callError = ""; callLogged = false;
+  // Daily caps (2026-11-21): reserve one dial server-side BEFORE the
+  // device/token step, for lead calls AND owner test calls (a test call
+  // costs the same). A 403 names the cap hit — personal or team — and
+  // nothing dials. Only the first attempt reserves: a stale-token retry
+  // (retried=true) reuses the reservation instead of counting twice.
+  if (!retried) {
+    try {
+      await api("/caps/dial", "POST", {});
+      await loadCaps();
+    } catch (e) {
+      isTestCall = false;
+      lastCallNote = e.message || "Daily limit reached.";
+      setCallState("idle");
+      if (currentTab === "rip") render();
+      showToast(lastCallNote);
+      return;
+    }
+  }
   setCallState("dialing");
   let device;
   try {
@@ -512,6 +651,16 @@ async function endCall(how) {
   if (callState === "idle") return;
   const wasAccepted = callAccepted;
   const errMsg = callError;
+  // Connected seconds are reported FIRST — including test calls, which
+  // return early below before any logging. Only time after the 'accept'
+  // event counts: callStartTs is set on accept, so a call that never
+  // connected reports 0 and is skipped. Ringing seconds never count.
+  const connectedSec = wasAccepted ? Math.max(0, Math.round(callElapsed())) : 0;
+  if (connectedSec > 0) {
+    try { await api("/caps/call-end", "POST", { connectedSec }); } catch (e) { console.warn("Could not record talk time", e); }
+  }
+  const wasCutoff = capsCutoff; capsCutoff = false;
+  try { await loadCaps(); } catch (_) {}
   const call = activeCall;
   activeCall = null;
   stopCallTimer();
@@ -532,7 +681,7 @@ async function endCall(how) {
     const elapsed = m.outcome === "connected" ? " " + fmtElapsed(callElapsed()) : "";
     lastCallNote = errMsg
       ? "Test call failed — " + errMsg + ". Not logged anywhere."
-      : "Test call ended — " + (CALL_LABELS[m.outcome] || m.outcome) + elapsed + ". Not logged anywhere.";
+      : "Test call ended — " + (CALL_LABELS[m.outcome] || m.outcome) + elapsed + (wasCutoff ? " " + capsCutoffNote() : "") + ". Not logged anywhere.";
     isTestCall = false; clearTestInput();
     syncCallUI();
     return;
@@ -540,7 +689,7 @@ async function endCall(how) {
   const lead = (state && state.leads) ? state.leads[ripIndex] : null;
   if (!lead || callLogged) return;
   callLogged = true;
-  lastCallNote = "Call ended — " + (CALL_LABELS[m.outcome] || m.outcome) + (errMsg ? " — " + errMsg : "") + ". Logged to the Call Log.";
+  lastCallNote = "Call ended — " + (CALL_LABELS[m.outcome] || m.outcome) + (wasCutoff ? " " + capsCutoffNote() : "") + (errMsg ? " — " + errMsg : "") + ". Logged to the Call Log.";
   await logCallEnd(lead, m);
 }
 function syncMuteUI() {
@@ -763,6 +912,7 @@ function renderRip() {
   const s = state.sessionStats || {};
   const script = (state.scripts && state.scripts[0]) || {title: "Roofer pitch", body: "Hi, this is Roman from SFB Connect — we build AI receptionists for roofers that answer every call, book jobs, and follow up automatically. Got 60 seconds for me to show you what that looks like for your company?"};
   return `
+  ${capsStripHtml()}
   <div class="grid2">
     <div class="card">
       <div class="lead-line">
@@ -837,7 +987,8 @@ function renderRip() {
       <div id="keypad-box" class="hidden" style="margin-top:10px">
         <div class="slots">${["1","2","3","4","5","6","7","8","9","*","0","#"].map((k) => `<button class="slot" data-key="${k}">${k}</button>`).join("")}</div>
       </div>
-      <button class="big-call${callState !== "idle" ? " end" : ""}" id="call-btn">${callState !== "idle" ? "END CALL" : "CALL"}</button>
+      <button class="big-call${callState !== "idle" ? " end" : ""}" id="call-btn" ${callState === "idle" && capsBlockedReason() ? "disabled" : ""}>${callState !== "idle" ? "END CALL" : "CALL"}</button>
+      <div id="caps-block-note" class="${capsBlockedReason() ? "error" : "hidden"}" style="margin-top:8px">${esc(capsBlockedReason())}</div>
       <button class="btn" id="text-btn" style="width:100%;margin-top:8px;padding:13px">TEXT</button>
       ${isOwner ? `
       <div style="margin-top:14px;border-top:1px solid var(--line);padding-top:12px">
@@ -900,6 +1051,8 @@ function bindRip() {
   const callBtn = $("#call-btn");
   if (callBtn) callBtn.onclick = async () => {
     if (callState !== "idle") { endCall("local"); return; } // END CALL
+    const blocked = capsBlockedReason();
+    if (blocked) { showToast(blocked); return; } // cap hit — the server would refuse too
     if (twilioReady) { await startTwilioCall(lead); return; }
     // Not known-live: re-check the server status on EVERY attempt (a false
     // is never cached — see checkTwilio). Only if it is still not ready do
@@ -927,6 +1080,8 @@ function bindRip() {
     }
     const to = String((testInput ? testInput.value : "") || "").replace(/[^\d+]/g, "");
     if (!/^\+?\d{7,15}$/.test(to)) { showToast("Type a full phone number to test-call, e.g. +1 555 123 4567."); return; }
+    const blocked = capsBlockedReason();
+    if (blocked) { showToast(blocked); return; } // test calls count against the caps too
     if (!twilioReady) {
       const ok = await checkTwilio();
       if (!ok) { showToast("In-dashboard calling is not set up yet — the test call needs Twilio live."); return; }
@@ -1585,6 +1740,42 @@ function anBarRow(label, value, max, sub) {
   return `<div class="an-bar-row"><span class="an-bar-label">${esc(label)}</span><span class="an-bar-track"><span class="an-bar-fill" style="width:${pct}%"></span></span><span class="an-bar-val">${esc(String(value))}${sub ? ` <span class="an-bar-sub">${esc(sub)}</span>` : ""}</span></div>`;
 }
 
+function capsCardHtml() {
+  const isOwner = roleFor(me) === "owner";
+  const dis = isOwner ? "" : "disabled";
+  const tl = capsLimits().team;
+  const users = capsLimits().users || {};
+  if (!capsData) {
+    return `<div class="card" id="caps-card"><div class="section-title" style="margin-top:0">Daily limits</div><div class="notice">Loading today's limits…</div></div>`;
+  }
+  const numField = (id, label, value) => `<div class="field"><label>${esc(label)}</label><input class="input" id="${id}" type="number" min="0" step="1" value="${esc(String(value))}" ${dis}></div>`;
+  return `<div class="card" id="caps-card">
+    <div class="section-title" style="margin-top:0">Daily limits — team + per person, resets midnight ET</div>
+    ${capsRowsHtml()}
+    <div class="caps-group"><b>Team caps</b><div class="caps-form">
+      ${numField("caps-team-dials", "Dials / day", tl.dials)}
+      ${numField("caps-team-talk", "Talk minutes / day", tl.talkMin)}
+      ${numField("caps-team-sms", "Texts / day", tl.sms)}
+      ${numField("caps-team-emails", "Emails / day", tl.emails)}
+      ${numField("caps-team-max", "Max seconds / call", tl.maxCallSec)}
+    </div></div>
+    ${CAPS_USERS.map((u) => {
+      const ul = users[u.username] || CAPS_DEFAULT_LIMITS.users[u.username];
+      return `<div class="caps-group"><b>${esc(u.name)} — per-person caps</b><div class="caps-form">
+        ${numField("caps-u-" + u.username + "-dials", "Dials / day", ul.dials)}
+        ${numField("caps-u-" + u.username + "-talk", "Talk minutes / day", ul.talkMin)}
+        ${numField("caps-u-" + u.username + "-sms", "Texts / day", ul.sms)}
+        ${numField("caps-u-" + u.username + "-emails", "Emails / day", ul.emails)}
+      </div></div>`;
+    }).join("")}
+    ${isOwner
+      ? `<button class="btn btn--primary" id="caps-save" style="margin-top:12px">Save caps</button>
+         <div id="caps-save-note" class="hidden" style="margin-top:10px"></div>
+         <p class="caps-note">Saves live immediately — the next dial checks the new numbers. The team text cap is forwarded to the receptionist best-effort.</p>`
+      : `<p class="caps-note">Only the owner can change caps — you're signed in as staff. Values above are read-only.</p>`}
+  </div>`;
+}
+
 function renderAnalytics() {
   if (!analyticsLoaded) {
     return `<div class="card"><div class="notice">Loading analytics…</div><button class="btn" id="an-refresh">Refresh</button></div>`;
@@ -1595,6 +1786,7 @@ function renderAnalytics() {
   const empty = a.empty ? `<div class="card"><div class="notice">No calls yet — dial a lead in RIP MODE or wait for an inbound call. These numbers fill in from real calls only; nothing here is seeded or estimated.</div></div>` : "";
   return `
   <div class="an-range">${rangeBtns}<button class="btn" id="an-refresh">Refresh</button></div>
+  ${capsCardHtml()}
   ${analyticsError ? `<div class="card"><div class="error">${esc(analyticsError)}</div></div>` : ""}
   ${analyticsRepError ? `<div class="card"><div class="notice">Receptionist calls could not be loaded — ${esc(analyticsRepError)} The outbound numbers below are still real.</div></div>` : ""}
   ${empty}
@@ -1616,7 +1808,7 @@ function renderAnalytics() {
   <div class="card">
     <div class="section-title" style="margin-top:0">Costs — estimates at the rates shown</div>
     <div class="kv"><span>Receptionist</span><span>${a.repMinutes} min · ≈ $${a.repCost.toFixed(2)} (est.)</span></div>
-    <div class="kv"><span>Outbound talk</span><span>Not tracked yet — talk minutes aren't recorded (≈ $${OUTBOUND_COST_PER_MIN}/min when tracked)</span></div>
+    <div class="kv"><span>Outbound talk</span><span>${capsData ? capsTalkMin(capsTeam().talkSec) + " min today · ≈ $" + ((capsTeam().talkSec / 60) * OUTBOUND_COST_PER_MIN).toFixed(2) + " (est., $" + OUTBOUND_COST_PER_MIN + "/min)" : "Not tracked yet — talk minutes aren't recorded (≈ $" + OUTBOUND_COST_PER_MIN + "/min when tracked)"}</span></div>
     <div class="kv"><span>Twilio balance</span><span>${esc(BALANCE_NOTE)}</span></div>
     ${a.repMissingDuration ? `<p class="notice">${a.repMissingDuration} receptionist call${a.repMissingDuration === 1 ? "" : "s"} in this range have no duration recorded, so the minutes above are a lower bound.</p>` : ""}
   </div>
@@ -1654,11 +1846,41 @@ function bindAnalytics() {
   if (refresh) refresh.onclick = () => { analyticsLoaded = false; loadAnalytics(); };
   const go = $("#an-goto-airep");
   if (go) go.onclick = () => onNavigate("airep");
+  // Owner-only caps save (2026-11-21): team caps + each person's caps.
+  // The worker validates every number and 403s staff — a failed save
+  // shows the real error and never wipes what was typed.
+  const capsSave = $("#caps-save");
+  if (capsSave) capsSave.onclick = async () => {
+    const num = (id) => { const el = $(id); return el ? Number(el.value) : NaN; };
+    const team = { dials: num("#caps-team-dials"), talkMin: num("#caps-team-talk"), sms: num("#caps-team-sms"), emails: num("#caps-team-emails"), maxCallSec: num("#caps-team-max") };
+    const users = {};
+    CAPS_USERS.forEach((u) => {
+      users[u.username] = { dials: num("#caps-u-" + u.username + "-dials"), talkMin: num("#caps-u-" + u.username + "-talk"), sms: num("#caps-u-" + u.username + "-sms"), emails: num("#caps-u-" + u.username + "-emails") };
+    });
+    const note = $("#caps-save-note");
+    const fail = (m) => { if (note) { note.textContent = m; note.className = "error"; } };
+    const all = [...Object.values(team), ...Object.values(users).flatMap((o) => Object.values(o))];
+    if (all.some((v) => !Number.isInteger(v))) { fail("Caps must be whole numbers."); return; }
+    capsSave.disabled = true; capsSave.textContent = "Saving…";
+    try {
+      const r = await api("/caps/limits", "POST", { team, users });
+      if (capsData) capsData.limits = r.limits; else capsData = { limits: r.limits };
+      if (note) {
+        note.textContent = "Saved — live immediately" + (r.receptionistSmsSync === false ? " (text cap could not be forwarded to the receptionist yet)" : "") + ".";
+        note.className = "ok-note";
+      }
+      render();
+    } catch (e) {
+      capsSave.disabled = false; capsSave.textContent = "Save caps";
+      fail("Save failed — " + (e.message || "the server did not answer."));
+    }
+  };
 }
 
 async function loadAnalytics() {
   if (analyticsLoading) return;
   analyticsLoading = true; analyticsError = ""; analyticsRepError = "";
+  await loadCaps(); // today's caps first, so the caps card renders with real numbers
   try { await loadState(); } catch (e) { analyticsError = e.message || "Could not load the dialer data."; }
   if (aiRepLoaded) { analyticsRepCalls = aiRepCalls || []; }
   else {

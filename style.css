@@ -1213,6 +1213,15 @@ html:has(.shell[data-appearance="light"]) .iphone-head-name b{color:#fff}
 .big-call.end{background:#ff453a;color:#fff}
 #call-status-line{margin-top:10px}
 
+/* Daily caps (2026-11-21): team + per-person limits, reset midnight ET. */
+.caps-strip{margin-bottom:14px}
+.caps-note{font-size:12px;color:var(--muted);margin:8px 0 0}
+.caps-form{display:grid;grid-template-columns:repeat(auto-fit,minmax(120px,1fr));gap:10px}
+.caps-form .field{margin-bottom:0}
+.caps-group{border:1px solid var(--line);border-radius:12px;padding:12px;margin-top:12px}
+.caps-group b{display:block;margin-bottom:8px}
+#caps-block-note{font-size:13px}
+
 /* Analytics tab (2026-11-21): real numbers only — CSS bars, no chart library. */
 .an-range{display:flex;gap:8px;flex-wrap:wrap;align-items:center;margin-bottom:14px}
 .an-bar-row{display:grid;grid-template-columns:118px 1fr 96px;gap:10px;align-items:center;margin:8px 0;font-size:13px}

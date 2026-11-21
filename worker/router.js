@@ -420,6 +420,7 @@ async function handleApi(request, env) {
   const AIREP_NUMBER = "+12393499491";
   const AIREP_ENGINE = "ConversationRelay + Workers AI (Llama 3.3 70B)";
   const AIREP_COST_PER_MIN = 0.0785;
+  const OUTBOUND_COST_PER_MIN = 0.018; // Twilio outbound $0.014 + browser leg $0.004 — estimate only
   async function receptionistFetch(rpath, method, rbody) {
     const key = env.RECEPTIONIST_KEY || "";
     if (!key) return { ok: false, status: 503, data: { error: "AI receptionist is not connected yet — the dashboard key is missing." } };
@@ -470,6 +471,267 @@ async function handleApi(request, env) {
     const r = await receptionistFetch("/api/config", "POST", patch);
     if (!r.ok) return err(r.data.error || "Could not save the receptionist settings.", r.status);
     return json({ ok: true, config: r.data.config || {}, isCustom: true });
+  }
+
+  // ---- Daily caps (2026-11-21) ----
+  // Team caps + per-person caps, both enforced HERE — the worker is the
+  // authority, so a rep cannot bypass a cap from the browser console.
+  // Counters reset at midnight America/New_York because the ET date is
+  // the KV key — no cron. Team: caps:YYYY-MM-DD. Per user:
+  // caps:YYYY-MM-DD:<username> (username from requireSession, never
+  // from the browser). Limits: caps:limits.
+  // A dial / talk minute / email is refused when EITHER the user's own
+  // cap OR the team cap is hit, and the refusal names which one.
+  // Texts are sent by the receptionist worker as the system (no user
+  // attribution), so this worker only READS the team text count via the
+  // proxy below — it never invents per-person text numbers.
+  const CAPS_DEFAULTS = {
+    team: { dials: 500, talkMin: 150, sms: 100, emails: 100, maxCallSec: 225 },
+    users: {
+      romanroyce: { dials: 167, talkMin: 50, sms: 33, emails: 33 },
+      loganwells: { dials: 167, talkMin: 50, sms: 33, emails: 33 },
+      braylengarrett: { dials: 167, talkMin: 50, sms: 33, emails: 33 },
+    },
+  };
+  const CAPS_BOUNDS = { dials: [0, 5000], talkMin: [0, 1440], sms: [0, 1000], emails: [0, 1000], maxCallSec: [60, 3600] };
+  const etDateStr = () => new Date().toLocaleDateString("en-CA", { timeZone: "America/New_York" });
+  function capsMergeLimits(stored) {
+    const out = JSON.parse(JSON.stringify(CAPS_DEFAULTS));
+    if (!stored || typeof stored !== "object") return out;
+    // Old flat shape ({dials, talkMin, ...} at top level) merges into team.
+    const teamSrc = stored.team && typeof stored.team === "object" ? stored.team : stored;
+    for (const k of ["dials", "talkMin", "sms", "emails", "maxCallSec"]) {
+      if (Number.isInteger(teamSrc[k])) out.team[k] = teamSrc[k];
+    }
+    if (stored.users && typeof stored.users === "object") {
+      for (const u of ALLOWED_USERS) {
+        const us = stored.users[u];
+        if (!us || typeof us !== "object") continue;
+        for (const k of ["dials", "talkMin", "sms", "emails"]) {
+          if (Number.isInteger(us[k])) out.users[u][k] = us[k];
+        }
+      }
+    }
+    return out;
+  }
+  async function getCapsLimits(env) {
+    const raw = await env.RIPMODE_KV.get("caps:limits");
+    if (!raw) return capsMergeLimits(null);
+    let stored = null;
+    try { stored = JSON.parse(raw); } catch (_) { stored = null; }
+    return capsMergeLimits(stored);
+  }
+  function capsBlank() { return { dials: 0, talkSec: 0, emails: 0 }; }
+  async function getCapsCounters(env, date, user) {
+    const key = "caps:" + date + (user ? ":" + user : "");
+    const raw = await env.RIPMODE_KV.get(key);
+    if (!raw) return capsBlank();
+    let c;
+    try { c = JSON.parse(raw); } catch (_) { return capsBlank(); }
+    return {
+      dials: Math.max(0, Number(c.dials) || 0),
+      talkSec: Math.max(0, Number(c.talkSec) || 0),
+      emails: Math.max(0, Number(c.emails) || 0),
+    };
+  }
+  async function saveCapsCounters(env, date, user, c) {
+    await env.RIPMODE_KV.put("caps:" + date + (user ? ":" + user : ""), JSON.stringify(c));
+  }
+  // SMS count lives on the receptionist worker (it sends the texts).
+  // Defensive: the sibling agent is adding GET /api/caps there — until
+  // it is live, return null with a note and NEVER fail the whole response.
+  async function capsSmsFromReceptionist() {
+    const r = await receptionistFetch("/api/caps");
+    if (r.ok && r.data && typeof r.data === "object") {
+      const d = r.data;
+      const n = d.used && typeof d.used.sms === "number" ? d.used.sms
+        : typeof d.sms === "number" ? d.sms
+        : typeof d.used === "number" ? d.used
+        : typeof d.count === "number" ? d.count : null;
+      if (typeof n === "number") return { sms: n, note: "" };
+    }
+    return { sms: null, note: "Text count is not available yet — the receptionist cap endpoint is not live." };
+  }
+  async function capsReceptionistToday() {
+    const r = await receptionistFetch("/calls");
+    if (!r.ok) return { minutes: null, costEst: null };
+    const calls = r.data.calls || [];
+    const todayET = new Date().toLocaleDateString("en-US", { timeZone: "America/New_York" });
+    let sec = 0;
+    for (const c of calls) {
+      try {
+        if (new Date(c.startedAt).toLocaleDateString("en-US", { timeZone: "America/New_York" }) === todayET) sec += Number(c.durationSec) || 0;
+      } catch (_) {}
+    }
+    const minutes = Math.round((sec / 60) * 10) / 10;
+    return { minutes, costEst: Math.round(minutes * AIREP_COST_PER_MIN * 100) / 100 };
+  }
+  function capsTalkMsg(who, usedSec, limitMin) {
+    const usedMin = Math.floor(usedSec / 60);
+    return who === "team"
+      ? "Team daily talk limit reached — " + usedMin + "/" + limitMin + " minutes. Resets midnight ET."
+      : "Your daily talk limit reached — " + usedMin + "/" + limitMin + " minutes. Resets midnight ET.";
+  }
+
+  if (path === "/api/caps" && request.method === "GET") {
+    const limits = await getCapsLimits(env);
+    const date = etDateStr();
+    const [team, mine, smsRes, recep] = await Promise.all([
+      getCapsCounters(env, date),
+      getCapsCounters(env, date, username),
+      capsSmsFromReceptionist(),
+      capsReceptionistToday(),
+    ]);
+    const teamUsed = { dials: team.dials, talkSec: team.talkSec, sms: smsRes.sms, emails: team.emails };
+    const mineUsed = { dials: mine.dials, talkSec: mine.talkSec, sms: null, emails: mine.emails };
+    return json({
+      ok: true,
+      date,
+      limits,
+      myLimits: limits.users[username] || limits.users.romanroyce,
+      used: teamUsed, // team totals (back-compat with the first caps shape)
+      team: teamUsed,
+      mine: mineUsed,
+      smsNote: smsRes.note,
+      receptionistMinutes: recep.minutes,
+      receptionistCostEst: recep.costEst,
+      // Cost estimates, labelled as estimates — never presented as bills.
+      outboundTalkCostEst: Math.round(((team.talkSec / 60) * OUTBOUND_COST_PER_MIN) * 100) / 100,
+    });
+  }
+  // Check-and-reserve one dial, team + per-user. Called by the client
+  // BEFORE ensureTwilioDevice in startTwilioCallTo, for BOTH lead calls
+  // and owner test calls (a test call costs the same). KV has no
+  // transaction, so the check + two puts are sequential — as atomic as
+  // KV allows. A retry after a stale-token failure must NOT reserve
+  // twice: the client only calls this on the first attempt.
+  if (path === "/api/caps/dial" && request.method === "POST") {
+    const limits = await getCapsLimits(env);
+    const date = etDateStr();
+    const team = await getCapsCounters(env, date);
+    const mine = await getCapsCounters(env, date, username);
+    const tLim = limits.team;
+    const uLim = limits.users[username] || limits.users.romanroyce;
+    if (team.dials >= tLim.dials) return err("Team daily limit reached — " + team.dials + "/" + tLim.dials + " dials. Resets midnight ET.", 403);
+    if (mine.dials >= uLim.dials) return err("Your daily limit reached — " + mine.dials + "/" + uLim.dials + " dials. Resets midnight ET.", 403);
+    if (team.talkSec >= tLim.talkMin * 60) return err(capsTalkMsg("team", team.talkSec, tLim.talkMin), 403);
+    if (mine.talkSec >= uLim.talkMin * 60) return err(capsTalkMsg("mine", mine.talkSec, uLim.talkMin), 403);
+    team.dials += 1;
+    mine.dials += 1;
+    await saveCapsCounters(env, date, null, team);
+    await saveCapsCounters(env, date, username, mine);
+    return json({
+      ok: true, allowed: true,
+      remaining: {
+        team: { dials: tLim.dials - team.dials, talkMin: Math.max(0, tLim.talkMin - Math.floor(team.talkSec / 60)) },
+        mine: { dials: uLim.dials - mine.dials, talkMin: Math.max(0, uLim.talkMin - Math.floor(mine.talkSec / 60)) },
+      },
+    });
+  }
+  // Add connected seconds to BOTH team and user talk. Only time after
+  // the 'accept' event counts — the client only sends seconds measured
+  // from accept, and ringing seconds are never sent. Clamped 0..3600.
+  if (path === "/api/caps/call-end" && request.method === "POST") {
+    const body = await request.json().catch(() => ({}));
+    let sec = Number(body && body.connectedSec);
+    if (!Number.isFinite(sec)) sec = 0;
+    sec = Math.max(0, Math.min(3600, Math.round(sec)));
+    const date = etDateStr();
+    const team = await getCapsCounters(env, date);
+    const mine = await getCapsCounters(env, date, username);
+    if (sec > 0) {
+      team.talkSec += sec;
+      mine.talkSec += sec;
+      await saveCapsCounters(env, date, null, team);
+      await saveCapsCounters(env, date, username, mine);
+    }
+    return json({ ok: true, addedSec: sec, teamTalkSec: team.talkSec, myTalkSec: mine.talkSec });
+  }
+  // Email counter + the server-side check the future Resend path will
+  // call. No email path is live yet (Resend wiring is still blocked),
+  // so nothing calls "record" today — the counter and the check exist
+  // so the future path cannot send past the cap. Both layers bind.
+  if (path === "/api/caps/email" && request.method === "POST") {
+    const body = await request.json().catch(() => ({}));
+    const action = body && body.action;
+    const limits = await getCapsLimits(env);
+    const date = etDateStr();
+    const team = await getCapsCounters(env, date);
+    const mine = await getCapsCounters(env, date, username);
+    const tLim = limits.team;
+    const uLim = limits.users[username] || limits.users.romanroyce;
+    const blockedReason = () => {
+      if (team.emails >= tLim.emails) return "Team daily limit reached — " + team.emails + "/" + tLim.emails + " emails. Resets midnight ET.";
+      if (mine.emails >= uLim.emails) return "Your daily limit reached — " + mine.emails + "/" + uLim.emails + " emails. Resets midnight ET.";
+      return "";
+    };
+    if (action === "check") {
+      const reason = blockedReason();
+      return json({
+        ok: true, allowed: !reason, reason,
+        remaining: { team: Math.max(0, tLim.emails - team.emails), mine: Math.max(0, uLim.emails - mine.emails) },
+      });
+    }
+    if (action === "record") {
+      let count = Number(body.count);
+      if (!Number.isFinite(count)) count = 1;
+      count = Math.max(1, Math.min(100, Math.round(count)));
+      const reason = blockedReason();
+      if (reason) return err(reason, 403);
+      team.emails += count;
+      mine.emails += count;
+      await saveCapsCounters(env, date, null, team);
+      await saveCapsCounters(env, date, username, mine);
+      return json({ ok: true, count, teamEmails: team.emails, myEmails: mine.emails });
+    }
+    return err("Unknown action — use check or record.");
+  }
+  // Owner-only limit changes. Patch shape: { team: {...}, users: { <user>: {...} } }
+  // — a flat { dials, talkMin, sms, emails, maxCallSec } patch is also
+  // accepted and means the team limits. maxCallSec is team-wide only.
+  // Takes effect immediately (the next GET /api/caps serves it). The
+  // team sms value is forwarded to the receptionist best-effort: if its
+  // endpoint is not live yet, the local save still succeeds and the
+  // response says so as a warning, not a failure.
+  if (path === "/api/caps/limits" && request.method === "POST") {
+    if (username !== "romanroyce") return err("Only the owner can change the daily limits.", 403);
+    const patch = await request.json().catch(() => null);
+    if (!patch || typeof patch !== "object" || Array.isArray(patch)) return err("No limits were sent.");
+    const limits = await getCapsLimits(env);
+    const validate = (src, allowedKeys) => {
+      for (const k of Object.keys(src || {})) {
+        if (!allowedKeys.includes(k)) return "Unknown limit: " + k + ".";
+        const [lo, hi] = CAPS_BOUNDS[k];
+        if (!Number.isInteger(src[k]) || src[k] < lo || src[k] > hi) {
+          return k + " must be a whole number from " + lo + " to " + hi + ".";
+        }
+      }
+      return "";
+    };
+    const teamPatch = (patch.team && typeof patch.team === "object")
+      ? patch.team
+      : Object.fromEntries(Object.entries(patch).filter(([k]) => k !== "users"));
+    const teamErr = validate(teamPatch, ["dials", "talkMin", "sms", "emails", "maxCallSec"]);
+    if (teamErr) return err(teamErr);
+    if (patch.users && typeof patch.users === "object") {
+      for (const u of Object.keys(patch.users)) {
+        if (!ALLOWED_USERS.includes(u)) return err("Unknown user in limits patch: " + u + ".");
+        if (!patch.users[u] || typeof patch.users[u] !== "object") return err("Limits for " + u + " must be an object.");
+        const e = validate(patch.users[u], ["dials", "talkMin", "sms", "emails"]);
+        if (e) return err(u + ": " + e);
+      }
+    }
+    Object.assign(limits.team, teamPatch);
+    if (patch.users) {
+      for (const u of Object.keys(patch.users)) Object.assign(limits.users[u], patch.users[u]);
+    }
+    await env.RIPMODE_KV.put("caps:limits", JSON.stringify(limits));
+    let receptionistSmsSync = false;
+    try {
+      const r = await receptionistFetch("/api/caps", "POST", { sms: limits.team.sms });
+      receptionistSmsSync = !!r.ok;
+    } catch (_) { receptionistSmsSync = false; }
+    return json({ ok: true, limits, receptionistSmsSync });
   }
 
   if (path === "/api/state" && request.method === "GET") {

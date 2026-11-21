@@ -905,6 +905,119 @@ byte-identical to local (sha256 match), Analytics nav present, zero
 occurrences of Rome's personal number in all served files.
 NO NUMBER DIALED. No account touched.
 
+## Daily caps (2026-11-21, v=17) — team caps + per-person caps
+
+Rome approved daily caps, shared by the team, reset at midnight
+America/New_York. The reset needs no cron: the ET date
+(YYYY-MM-DD, computed server-side) is the KV key, so a new date
+means fresh counters.
+
+NUMBERS (defaults, all changeable by the owner — see below):
+- Team, per day: 500 dials, 150 talk minutes, 100 texts, 100 emails.
+  Per-call max 3:45 (225s), warning at 3:00, auto-end at 3:45.
+- Each person (romanroyce / loganwells / braylengarrett), per day:
+  167 dials, 50 talk minutes, 33 texts, 33 emails. 167×3 = 501, so
+  the team 500 caps first — intended. maxCallSec is team-wide only.
+- Inbound receptionist calls: NO hard cap — the AI Rep / Analytics
+  tabs show receptionist minutes + cost (≈ $0.0785/min, labelled
+  estimate) so spend stays visible.
+
+WHAT EACH COUNTS:
+- Dials: every outbound dial placed, INCLUDING the owner test-call
+  box (it costs the same). The client reserves one dial via
+  POST /api/caps/dial BEFORE the token/device step, for lead calls
+  and test calls alike; a stale-token retry does NOT reserve twice.
+- Talk: connected seconds only — measured from the SDK 'accept'
+  event. Ringing seconds never count. endCall reports them via
+  POST /api/caps/call-end whenever the call was accepted, INCLUDING
+  test calls (reported before the test-call early return that skips
+  logging). A call ended by the 3:45 cutoff keeps its real outcome
+  (connected, never mislabelled no-answer) and the note says so.
+- Texts: Twilio SMS only, enforced by the receptionist worker — this
+  dashboard only READS the team count via the existing
+  RECEPTIONIST_KEY proxy (GET /api/caps on the receptionist). Texts
+  are sent by the receptionist as the system with no user
+  attribution, so the UI shows the TEAM line only (x/100) with the
+  note "system-sent, shared by the team" — no per-person text
+  numbers are ever invented.
+- Emails: no email path is live yet (Resend wiring is still blocked),
+  so the counter + the server-side check the future Resend path will
+  call exist (POST /api/caps/email check/record), and the UI shows
+  0/100 with the honest note "no emails sent yet — Resend not
+  wired". No fake enforcement on a path that does not exist.
+
+ENFORCEMENT — the worker is the authority:
+- A dial / talk minute / email is refused when EITHER the user's
+  own cap OR the team cap is hit, and the 403 names which one:
+  "Your daily limit reached — 167/167 dials" vs "Team daily limit
+  reached — 500/500 dials" (same pattern for talk minutes and
+  emails). The per-user counter uses the session username from
+  requireSession — never a username sent from the browser.
+- Counters in KV: team `caps:YYYY-MM-DD`, per-user
+  `caps:YYYY-MM-DD:<username>`, each { dials, talkSec, emails }.
+  Limits in KV key `caps:limits`: { team: { dials, talkMin, sms,
+  emails, maxCallSec }, users: { romanroyce: {...}, loganwells:
+  {...}, braylengarrett: {...} } }.
+- Endpoints (all session-checked): GET /api/caps → { date (ET),
+  limits, myLimits, team + mine used, smsNote, receptionistMinutes,
+  receptionistCostEst, outboundTalkCostEst (labelled estimates) };
+  POST /api/caps/dial (check-and-reserve, increments team + user);
+  POST /api/caps/call-end { connectedSec } (clamped 0..3600, added
+  to team + user talkSec); POST /api/caps/email { action: "check" |
+  "record", count }; POST /api/caps/limits (OWNER ONLY, staff 403 —
+  patch { team, users } or a flat team patch; integers validated
+  against sane bounds: dials 0..5000, talkMin 0..1440, sms 0..1000,
+  emails 0..1000, maxCallSec 60..3600; the team sms value is
+  forwarded to the receptionist via POST /api/caps best-effort — if
+  that endpoint is not live yet the local save still succeeds and
+  the response returns receptionistSmsSync: false as a warning).
+  GET /api/caps reads the SMS count through the same proxy
+  defensively: if the receptionist endpoint is absent it returns
+  sms: null with a note and never fails the whole response.
+
+UI (template visual language — same cards, pills, stat boxes,
+progress bars):
+- RIP MODE tab: compact "Daily limits" strip — "You: x/167 dials"
+  and "Team: x/500 dials" (same pattern for talk 50/150 min and
+  emails 33/100), texts team-only, cost-so-far estimates labelled
+  "(est.)", "resets midnight ET". Loads on dashboard load, refreshes
+  after every call ends (in place — never a full re-render mid-call).
+- Analytics tab: full "Daily limits" card with the same counters
+  plus the owner edit form (team caps + each person's four caps);
+  staff see everything read-only. Save shows "Saved — live
+  immediately" (the next dial checks the new numbers); failure
+  shows the real error and never wipes what was typed. The
+  Analytics Costs card now shows real outbound talk minutes instead
+  of "Not tracked yet".
+- When a cap is hit, CALL and the test-call button are disabled with
+  the reason shown next to them (the server would refuse anyway).
+
+VERIFIED: Node harness (/tmp/caps-harness.mjs) 115/115 against the
+real worker/router.js + real app.js — defaults, dual increments,
+personal 167 refusal naming the personal cap, team 500 refusal
+naming the team cap (user under their own cap), talk accumulation
+on team + user only, 0/garbage/negative ignored, clamp at 3600,
+talk-cap refusals (personal 50 min, team 150 min), email
+check/record + personal 33 refusal, owner edit (team + individual,
+immediate effect, flat patch), staff 403, bounds/unknown-user
+rejections, SMS read via proxy (42 when live, null + note when
+absent), receptionist minutes/cost, limits forward
+(receptionistSmsSync true when live, false warning when absent),
+BillMe sync still working (401 without secret, Proposal on sent,
+duplicate no-op), state/call log/session stats untouched by caps,
+per-user + team counters rolling over on a new ET date (shared KV,
+fake-date second day), strip/card render (both lines, texts
+team-only, Resend note, owner form for all three users, staff
+read-only), CALL disabled at cap, 3:00 warning + 3:45 cutoff ending
+the call with outcome Connected, ringing-only call reporting 0,
+dial reserved before token mint, test call reporting ~40 connected
+seconds with zero state logging, refused dial minting no token.
+`node --check` clean on app.js, router.js and the regenerated
+worker/standalone.js (v=17). Zero occurrences of Rome's personal
+forwarding number in served files. NOT deployed — the parent deploys
+with the fixed deploy.py after both agents finish. NO NUMBER DIALED.
+No account touched.
+
 ## BillMe sync
 
 BillMe invoices sync into this CRM via Stripe webhooks (test mode).
