@@ -514,6 +514,24 @@ async function handleApi(request, env) {
   if (path === "/api/email/status" && request.method === "GET") {
     return json({ ok: true, connected: !!env.RESEND_API_KEY });
   }
+  // GET /api/stripe/totals — read-only revenue totals for the Dashboard's
+  // Revenue card. Reads KV key "stripe:totals" (seeded/refreshed by an
+  // external job — the front-end only reads it, never writes it). No
+  // Stripe call is made here and no Stripe key/secret is stored in this
+  // worker. Absent key → { present: false } and the Dashboard shows its
+  // honest empty state ("Stripe not connected yet"). The numbers are
+  // served as stored — the worker never invents revenue figures.
+  if (path === "/api/stripe/totals" && request.method === "GET") {
+    const raw = await env.RIPMODE_KV.get("stripe:totals");
+    if (!raw) return json({ present: false });
+    try {
+      const t = JSON.parse(raw);
+      if (!t || typeof t !== "object") return json({ present: false });
+      return json({ present: true, totals: t });
+    } catch (_) {
+      return json({ present: false });
+    }
+  }
 
   // ---- AI receptionist (session required; config saves are owner-only) ----
   // The dashboard's AI Rep tab talks to the sfb-receptionist worker through

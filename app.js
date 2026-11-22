@@ -374,7 +374,64 @@ function logout() {
   showLogin();
 }
 
-async function loadState() { state = await api("/state", "GET"); }
+async function loadState() { state = await api("/state", "GET"); await loadStripeTotals(); }
+
+/* ---------- Stripe revenue totals (2026-11-22, v26) ----------
+   Read-only: the Dashboard's Revenue card reads KV key "stripe:totals"
+   (seeded/refreshed by an external job) through GET /api/stripe/totals.
+   The front-end NEVER writes it, never calls Stripe, and holds no Stripe
+   key/secret. stripeTotals: undefined = not loaded yet; null = key
+   absent (honest empty state); object = the stored totals. */
+let stripeTotals;
+async function loadStripeTotals() {
+  try {
+    const r = await api("/stripe/totals", "GET");
+    stripeTotals = (r && r.present && r.totals && typeof r.totals === "object") ? r.totals : null;
+  } catch (_) { stripeTotals = null; }
+}
+const STRIPE_MONTHS = ["Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"];
+function stripeMonthLabel(m) {
+  const mm = String(m || "").match(/^(\d{4})-(\d{2})$/);
+  if (!mm) return String(m || "");
+  return STRIPE_MONTHS[Number(mm[2]) - 1] + " " + mm[1];
+}
+function fmtStripeDate(iso) {
+  const s = String(iso || "");
+  const m = s.match(/^(\d{4})-(\d{2})-(\d{2})/);
+  // Date-only strings parse as local midnight (no UTC→ET day shift);
+  // full timestamps keep their time.
+  const d = m ? new Date(Number(m[1]), Number(m[2]) - 1, Number(m[3])) : new Date(s);
+  if (isNaN(d.getTime())) return "";
+  return s.includes("T")
+    ? d.toLocaleDateString("en-US", { month: "short", day: "numeric", year: "numeric", hour: "numeric", minute: "2-digit" })
+    : d.toLocaleDateString("en-US", { month: "short", day: "numeric", year: "numeric" });
+}
+function stripeMoney(n) { return "$" + (Number(n) || 0).toFixed(2); }
+/* The Revenue — Stripe card. Always real data (or its honest empty
+   state) — the sample-data preview NEVER touches this card. */
+function stripeRevenueCardHtml() {
+  if (stripeTotals === undefined) return `<div class="card"><div class="section-title" style="margin-top:0">Revenue — Stripe</div><div class="notice">Loading Stripe totals…</div></div>`;
+  if (!stripeTotals) return `<div class="card"><div class="section-title" style="margin-top:0">Revenue — Stripe</div><div class="notice">Stripe not connected yet — connect it to see real revenue here.</div></div>`;
+  const t = stripeTotals;
+  const monthly = Array.isArray(t.monthly) ? t.monthly : [];
+  const maxM = Math.max(1, ...monthly.map((x) => Number(x.amount) || 0));
+  const updated = fmtStripeDate(t.lastUpdated);
+  return `<div class="card">
+    <div class="db-card-head"><div class="section-title" style="margin-top:0">Revenue — Stripe</div><span class="badge">Live Stripe</span></div>
+    <div class="stat-boxes stat-boxes--4">
+      <div class="stat-box"><div class="num">${stripeMoney(t.totalGross)}</div><div class="lbl">Total revenue · all time</div></div>
+      <div class="stat-box"><div class="num">${stripeMoney(t.thisMonth)}</div><div class="lbl">This month</div></div>
+      <div class="stat-box"><div class="num">${stripeMoney(t.mrr)}</div><div class="lbl">MRR</div></div>
+      <div class="stat-box"><div class="num">${stripeMoney(t.balance)}</div><div class="lbl">Current balance</div></div>
+    </div>
+    ${monthly.length ? `<div class="section-title">Monthly revenue</div>` + monthly.map((x) => {
+      const amt = Number(x.amount) || 0;
+      const pct = maxM ? Math.round((amt / maxM) * 100) : 0;
+      return `<div class="an-bar-row"><span class="an-bar-label">${esc(stripeMonthLabel(x.month))}</span><span class="an-bar-track"><span class="an-bar-fill" style="width:${pct}%"></span></span><span class="an-bar-val">${stripeMoney(amt)}</span></div>`;
+    }).join("") : ""}
+    <p class="notice">${updated ? `Last updated ${esc(updated)} · ` : ""}Live Stripe — read from the connected Stripe account.</p>
+  </div>`;
+}
 async function mutate(op, payload) {
   state = await api("/state", "POST", {op, ...payload});
   render();
@@ -1117,6 +1174,8 @@ function render() {
   const meta = TAB_META[currentTab] || TAB_META.dashboard;
   const sub = currentTab === "leads"
     ? `${(state.leads || []).length} leads. New leads start in the Pipeline at "New".`
+    : currentTab === "dashboard" && dbSample
+    ? "Sample preview — the numbers below come from the design reference, not your real data."
     : meta[1];
   let body = "";
   if (currentTab === "dashboard") body = renderDashboard();
@@ -1132,7 +1191,7 @@ function render() {
   else if (currentTab === "announcements") body = renderAnnouncements();
   else if (currentTab === "today") body = renderToday();
   else if (currentTab === "connections") body = renderConnections();
-  main.innerHTML = `<div class="page-heading"><div><span class="eyebrow">YOUR WORKSPACE</span><h1>${esc(meta[0])}</h1>${sub ? `<p>${esc(sub)}</p>` : ""}</div></div>` + body;
+  main.innerHTML = `<div class="page-heading"><div><span class="eyebrow">YOUR WORKSPACE</span><h1>${esc(meta[0])}</h1>${sub ? `<p>${esc(sub)}</p>` : ""}</div>${currentTab === "dashboard" ? dbSampleToggleHtml() : ""}</div>` + body;
   // Full-panel Call Log (2026-11-21, v23): the iPad fills the whole panel —
   // the shell class drives the height/width rules in ripmode.css.
   const shell = $("#shell");
@@ -2347,6 +2406,8 @@ function computeAnalytics(st, repCalls, range, nowMs, scopeUser) {
    plotted fake points. Pure SVG, no library. */
 let _anChartData = [];
 function anChartTipHtml(d) {
+  // Sample revenue points (v26): the tooltip shows the day + Revenue $.
+  if (d && d.revenue != null) return `<b>${esc(d.tip || d.label)}</b><br>Revenue $${Number(d.revenue).toLocaleString("en-US")}`;
   return `<b>${esc(d.label)}</b><br>${d.dials} dial${d.dials === 1 ? "" : "s"} · ${d.connected} connected · ${d.meetings} meeting${d.meetings === 1 ? "" : "s"}`;
 }
 function anAreaChartHtml(a) {
@@ -2423,6 +2484,158 @@ function capsCardHtml() {
   </div>`;
 }
 
+/* ---------- Sample-data preview (2026-11-22, v26) ----------
+   Display-only preview so Rome can see the Dashboard filled in like the
+   design reference. EVERY number here comes straight from the reference
+   screenshot — none of it is real, none of it is ever written to KV,
+   never sent to any API, and never mixed into the real-data paths.
+   The toggle is a display preference only (localStorage key below),
+   default OFF. The Revenue — Stripe card is NOT part of the sample: it
+   always shows the real Stripe totals (or its honest empty state), and
+   the sample banner says so. */
+const DB_SAMPLE_KEY = "sfb-dashboard-sample";
+let dbSample = false;
+try { dbSample = (typeof localStorage !== "undefined" && localStorage.getItem(DB_SAMPLE_KEY) === "1"); } catch (_) { dbSample = false; }
+function dbSampleOn() { return dbSample === true; }
+function setDbSample(on) {
+  dbSample = !!on;
+  try { if (typeof localStorage !== "undefined") localStorage.setItem(DB_SAMPLE_KEY, dbSample ? "1" : "0"); } catch (_) {}
+  render(); // display-only: re-renders the Dashboard, writes nothing to KV
+}
+const SAMPLE_DATA = {
+  leads: 129, leadsDelta: 24, leadsPct: "8.0%",
+  conversionRate: 24, conversionDelta: 8, conversionPct: "2.0%",
+  clv: "14d", clvDelta: "+1d", clvPct: "4.0%",
+  revenue: 30240, revenueDeltaPct: "7.5%",
+  leadsOpen: 114, leadsInProgress: 62,
+  retention: 95, retentionDeltaPct: "12%",
+  // Daily revenue, Feb 14 – Mar 15, tracing the reference chart's wavy
+  // line. Only Feb 17 ($28,917) is a labeled value in the reference; the
+  // other points follow the same shape so the chart looks like the shot.
+  revenueSeries: (() => {
+    const vals = [29600, 28900, 29200, 28917, 29800, 30100, 29600, 30500, 31200, 30800, 31400, 30900, 30100, 30600, 31200, 31800, 31100, 31600, 30900, 31400, 30700, 31300, 31900, 31500, 30900, 31600, 31200, 31800, 31100, 31700];
+    const start = new Date(2026, 1, 14);
+    return vals.map((v, i) => {
+      const d = new Date(start.getTime() + i * 86400000);
+      return {
+        label: d.toLocaleDateString("en-US", { month: "short", day: "numeric" }),
+        tip: d.toLocaleDateString("en-US", { weekday: "short", month: "short", day: "numeric" }),
+        revenue: v, dials: v, connected: 0, meetings: 0,
+      };
+    });
+  })(),
+  // Retention bar groups (Enterprises / SMEs / Startups). Heights
+  // approximate the reference chart's visual shape; no per-bar value is
+  // labeled in the reference, so none is shown here either.
+  retentionBars: [[84, 95, 78], [76, 90, 84], [88, 97, 82], [80, 92, 86], [85, 96, 80], [78, 91, 85], [90, 98, 83]],
+};
+/* Sample revenue area chart — same SVG geometry as anAreaChartHtml, but
+   the y-axis is dollars (0–40k) and the hover tooltip shows Revenue $. */
+function sampleRevenueChartHtml(points) {
+  const W = 660, H = 230, padL = 40, padR = 14, padT = 14, padB = 26;
+  const yMax = 40000;
+  const n = points.length;
+  const x = (i) => n === 1 ? W / 2 : padL + (i * (W - padL - padR)) / (n - 1);
+  const y = (v) => padT + (1 - v / yMax) * (H - padT - padB);
+  const line = points.map((d, i) => (i ? "L" : "M") + x(i).toFixed(1) + "," + y(d.revenue).toFixed(1)).join(" ");
+  const area = line + ` L${x(n - 1).toFixed(1)},${y(0).toFixed(1)} L${x(0).toFixed(1)},${y(0).toFixed(1)} Z`;
+  const ticks = [0, 10000, 20000, 30000, 40000];
+  const tickLabel = (v) => v === 0 ? "0" : (v / 1000) + "k";
+  const xLabels = [0, 3, 6, 11, 17, 23, 29]; // Feb 14, Feb 17, Feb 20, Feb 25, Mar 3, Mar 9, Mar 15 — as in the reference
+  return `<div class="an-chart-wrap">
+  <svg data-an-chart viewBox="0 0 ${W} ${H}" width="100%" role="img" aria-label="Sample revenue over time">
+    <defs><linearGradient id="an-area-grad" x1="0" y1="0" x2="0" y2="1"><stop offset="0%" stop-color="#34d399" stop-opacity="0.28"/><stop offset="100%" stop-color="#34d399" stop-opacity="0"/></linearGradient></defs>
+    ${ticks.map((v) => `<line x1="${padL}" y1="${y(v).toFixed(1)}" x2="${W - padR}" y2="${y(v).toFixed(1)}" class="an-grid"/><text x="${padL - 8}" y="${(y(v) + 4).toFixed(1)}" class="an-axis" text-anchor="end">${tickLabel(v)}</text>`).join("")}
+    <path d="${area}" fill="url(#an-area-grad)"/>
+    <path d="${line}" class="an-line-dials" fill="none"/>
+    ${points.map((d, i) => `<circle cx="${x(i).toFixed(1)}" cy="${y(d.revenue).toFixed(1)}" r="3" class="an-dot-dials"/>`).join("")}
+    ${xLabels.map((i) => `<text x="${x(i).toFixed(1)}" y="${H - 8}" class="an-axis" text-anchor="middle">${esc(points[i].label)}</text>`).join("")}
+    <circle id="an-chart-dot" r="4.5" class="an-dot-hl" style="display:none"/>
+    <rect data-an-chart-hit x="${padL}" y="${padT}" width="${W - padL - padR}" height="${H - padT - padB}" fill="transparent"/>
+  </svg>
+  <div class="an-chart-tip hidden" id="an-chart-tip"></div>
+  <div class="an-chart-legend"><span><i class="an-sw-dials"></i>Revenue</span></div>
+</div>`;
+}
+/* Sample retention grouped bars (Enterprises / SMEs / Startups). */
+function sampleRetentionBarsHtml() {
+  const groups = SAMPLE_DATA.retentionBars;
+  const W = 560, H = 150, base = 130, bw = 14, inGap = 6, pitch = 80;
+  const colors = ["#43434a", "#f2f2f5", "#8e8e96"];
+  const rects = groups.map((g, gi) => g.map((h, bi) => {
+    const bh = Math.round((h / 100) * 110);
+    const bx = gi * pitch + bi * (bw + inGap);
+    return `<rect x="${bx}" y="${base - bh}" width="${bw}" height="${bh}" rx="2" fill="${colors[bi]}"/>`;
+  }).join("")).join("");
+  return `<svg viewBox="0 0 ${W} ${H}" width="100%" role="img" aria-label="Sample retention by segment">
+    <line x1="0" y1="${base}" x2="${W}" y2="${base}" class="an-grid"/>${rects}
+  </svg>
+  <div class="db-ret-legend"><span><i class="db-ret-sw" style="background:#43434a"></i>Enterprises</span><span><i class="db-ret-sw" style="background:#f2f2f5"></i>SMEs</span><span><i class="db-ret-sw" style="background:#8e8e96"></i>Startups</span></div>`;
+}
+function dbSampleToggleHtml() {
+  return `<div class="db-sample-toggle">
+    <span class="db-sample-toggle-label">Sample data</span>
+    <button type="button" id="db-sample-btn" class="db-toggle${dbSample ? " on" : ""}" role="switch" aria-checked="${dbSample}" aria-label="Sample data preview"><span class="db-toggle-knob"></span></button>
+    ${dbSample ? `<span class="db-sample-warn">Preview — not real numbers</span>` : ""}
+  </div>`;
+}
+/* The Dashboard rendered with the reference's numbers. Every card/panel
+   carries a SAMPLE tag, and the banner up top says what is sample and
+   that the Revenue figures are real Stripe data. The Revenue card itself
+   is the real one (stripeRevenueCardHtml) — untouched by the preview. */
+function renderDashboardSample() {
+  const S = SAMPLE_DATA;
+  _anChartData = S.revenueSeries;
+  const revenueNote = stripeTotals ? " Revenue figures are real Stripe data." : "";
+  const lmBody = dbLeadsTab === "status"
+    ? anBarRow("Open", S.leadsOpen, S.leadsOpen, "leads") + anBarRow("In Progress", S.leadsInProgress, S.leadsOpen, "leads")
+    : `<p class="notice">Sample data only covers the Status view — switch Sample data off to see your real Sources and Qualification.</p>`;
+  return `
+  <div class="db-sample-banner"><b>SAMPLE DATA</b> — these numbers are a preview from the design reference, not your real numbers.${revenueNote} Switch Sample data off to see your real numbers.</div>
+  <div class="db-stats">
+    <button type="button" class="db-stat" data-dbgo="leads">
+      <span class="db-stat-top"><span class="db-stat-label">Leads</span><span class="db-stat-pct up">● ${S.leadsPct}</span></span>
+      <span class="db-stat-num">${S.leads}</span>
+      <span class="db-stat-sub">${dbDeltaPill(S.leadsDelta)} <span>vs last week</span></span>
+      <span class="db-sample-tag">SAMPLE</span>
+    </button>
+    <button type="button" class="db-stat" data-dbgo="analytics">
+      <span class="db-stat-top"><span class="db-stat-label">Conversion rate</span><span class="db-stat-pct up">● ${S.conversionPct}</span></span>
+      <span class="db-stat-num">${S.conversionRate}%</span>
+      <span class="db-stat-sub">${dbDeltaPill(S.conversionDelta)} <span>vs last week</span></span>
+      <span class="db-sample-tag">SAMPLE</span>
+    </button>
+    <button type="button" class="db-stat" data-dbgo="calendar">
+      <span class="db-stat-top"><span class="db-stat-label">CLV</span><span class="db-stat-pct down">● ${S.clvPct}</span></span>
+      <span class="db-stat-num">${S.clv}</span>
+      <span class="db-stat-sub"><span class="db-delta up">${S.clvDelta}</span> <span>vs last week</span></span>
+      <span class="db-sample-tag">SAMPLE</span>
+    </button>
+  </div>
+  ${stripeRevenueCardHtml()}
+  <div class="card db-chart-card">
+    <div class="db-card-head"><div><div class="section-title" style="margin-top:0">Revenue over time <span class="db-sample-tag">SAMPLE</span></div>
+    <div class="db-sample-big">$${S.revenue.toLocaleString("en-US")} <span class="db-delta up">+${S.revenueDeltaPct} vs last month</span></div></div></div>
+    ${sampleRevenueChartHtml(S.revenueSeries)}
+  </div>
+  <div class="db-panels">
+    <div class="card db-panel">
+      <div class="db-card-head"><div class="section-title" style="margin-top:0">Leads Management <span class="db-sample-tag">SAMPLE</span></div><button class="btn" data-dbgo="pipeline">View Pipeline</button></div>
+      <div class="seg-toggle" role="group" aria-label="Leads management view">
+        <button type="button" data-dbleads="status" aria-pressed="${dbLeadsTab === "status"}">Status</button>
+        <button type="button" data-dbleads="sources" aria-pressed="${dbLeadsTab === "sources"}">Sources</button>
+        <button type="button" data-dbleads="qual" aria-pressed="${dbLeadsTab === "qual"}">Qualification</button>
+      </div>
+      <div style="margin-top:14px">${lmBody}</div>
+    </div>
+    <div class="card db-panel">
+      <div class="db-card-head"><div class="section-title" style="margin-top:0">Retention Rate <span class="db-sample-tag">SAMPLE</span></div><button class="btn" data-dbgo="analytics">View Analytics</button></div>
+      <div class="db-sample-big">${S.retention}% <span class="db-delta up">+${S.retentionDeltaPct} vs last month</span></div>
+      ${sampleRetentionBarsHtml()}
+    </div>
+  </div>`;
+}
+
 /* ---------- Dashboard overview (2026-11-21, v23) ----------
    The reference screenshot's screen, rebuilt with SFB's REAL data only:
    3 stat cards (Leads / Connect rate / Meetings booked) with vs-last-week
@@ -2467,6 +2680,7 @@ function dbDeltaPill(v, suffix) {
   return `<span class="db-delta ${cls}">${sign}${v}${suffix || ""}</span>`;
 }
 function renderDashboard() {
+  if (dbSampleOn()) return renderDashboardSample();
   const leads = state.leads || [];
   const aAll = computeAnalytics(state, [], "all", undefined, null);
   const aChart = computeAnalytics(state, [], dbRange, undefined, null);
@@ -2512,6 +2726,7 @@ function renderDashboard() {
       <span class="db-stat-sub">${dbDeltaPill(deltas.meetings)} <span>vs last week</span></span>
     </button>
   </div>
+  ${stripeRevenueCardHtml()}
   <div class="card db-chart-card">
     <div class="db-card-head"><div class="section-title" style="margin-top:0">Dials over time — ${esc(aChart.rangeLabel)}</div><div class="an-range">${rangeBtns}</div></div>
     ${anAreaChartHtml(aChart)}
@@ -2535,6 +2750,8 @@ function renderDashboard() {
   </div>`;
 }
 function bindDashboard() {
+  const sampleBtn = $("#db-sample-btn");
+  if (sampleBtn) sampleBtn.onclick = () => setDbSample(!dbSample);
   document.querySelectorAll("[data-dbgo]").forEach((b) => b.onclick = () => onNavigate(b.dataset.dbgo));
   document.querySelectorAll("[data-dbrange]").forEach((b) => b.onclick = () => { dbRange = b.dataset.dbrange; render(); });
   document.querySelectorAll("[data-dbleads]").forEach((b) => b.onclick = () => { dbLeadsTab = b.dataset.dbleads; render(); });

@@ -696,3 +696,26 @@ html:has(.shell[data-appearance="light"]) .db-delta.down{color:#b42318}
 .update-banner-btn:hover{background:#4be0a8}
 .update-banner-x{border:0;background:none;color:var(--muted);font:inherit;font-size:18px;line-height:1;padding:4px 8px;cursor:pointer}
 .update-banner-x:hover{color:var(--text)}
+
+/* ----- Sample-data preview + Stripe Revenue card (v26, 2026-11-22) ----- */
+.db-sample-banner{background:rgba(255,204,0,.12);border:1px solid rgba(255,204,0,.45);color:#ffd60a;border-radius:12px;padding:12px 16px;margin-bottom:12px;font-size:13px;line-height:1.5}
+.db-sample-banner b{letter-spacing:.04em}
+.db-sample-tag{display:inline-block;font-size:10px;font-weight:700;letter-spacing:.05em;background:rgba(255,204,0,.15);color:#ffd60a;border:1px solid rgba(255,204,0,.4);border-radius:999px;padding:1px 7px;vertical-align:middle;margin-left:6px;white-space:nowrap}
+html:has(.shell[data-appearance="light"]) .db-sample-banner{background:rgba(180,130,0,.1);border-color:rgba(180,130,0,.45);color:#8a6100}
+html:has(.shell[data-appearance="light"]) .db-sample-tag{background:rgba(180,130,0,.12);color:#8a6100;border-color:rgba(180,130,0,.4)}
+.db-sample-toggle{display:flex;align-items:center;gap:8px;flex:none}
+.db-sample-toggle-label{font-size:13px;font-weight:600;color:var(--muted)}
+.db-sample-warn{font-size:12px;font-weight:600;color:#ffd60a;white-space:nowrap}
+.db-toggle{position:relative;width:42px;height:24px;border-radius:999px;border:1px solid var(--line);background:#2c2c2e;padding:0;cursor:pointer;flex:none}
+.db-toggle .db-toggle-knob{position:absolute;top:2px;left:2px;width:18px;height:18px;border-radius:50%;background:#fafafa;transition:left .15s ease}
+.db-toggle.on{background:#34d399;border-color:#34d399}
+.db-toggle.on .db-toggle-knob{left:20px}
+.db-stat-top{display:flex;align-items:center;justify-content:space-between;width:100%}
+.db-stat-pct{font-size:12px;font-weight:700;white-space:nowrap}
+.db-stat-pct.up{color:#34d399}
+.db-stat-pct.down{color:#ff8a80}
+.db-sample-big{display:flex;align-items:baseline;gap:10px;flex-wrap:wrap;font-size:28px;font-weight:750;letter-spacing:-.02em;color:var(--text);line-height:1.1;margin-top:10px}
+.db-ret-legend{display:flex;gap:16px;flex-wrap:wrap;font-size:12px;color:var(--muted);margin:12px 0 4px}
+.db-ret-sw{display:inline-block;width:10px;height:10px;border-radius:2px;margin-right:6px;vertical-align:-1px}
+.stat-boxes--4{grid-template-columns:repeat(4,1fr)}
+@media(max-width:820px){.stat-boxes--4{grid-template-columns:repeat(2,1fr)}}
