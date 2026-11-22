@@ -299,6 +299,7 @@ function showDashboard() {
   updateNav();
   checkTwilio(); // fire-and-forget: decides CALL (Twilio vs Google Voice fallback)
   loadCaps(); // fire-and-forget: today's team + per-person limits for the strip
+  startUpdateChecker(); // v25: polls for a newer deployed version (no-op if already started)
 }
 
 async function checkSession() {
@@ -3161,5 +3162,73 @@ $("#login-username").addEventListener("input", async (e) => {
     if (el.value !== d) el.value = d;
   });
 });
+
+/* ---------- v25 (2026-11-22) — "new version available" notice ----------
+   Rome keeps a dashboard tab open across deploys and reports "i still
+   dont see the new dashboard": the SPA never reloads itself, so a stale
+   tab runs the old version indefinitely. Every 60s this fetches the
+   current page (no query string — those 404 at the route level) with
+   cache:"no-store" and compares the app.js v=NN in the returned HTML
+   against the v=NN of the script tag that loaded this bundle. If the
+   server has a newer version, a slim banner offers Reload. The check
+   never runs while a call is in progress (callState !== "idle"), while
+   the tab is hidden, or while the login screen is showing; a failed
+   fetch is silently ignored and retried next minute. Dismissing hides
+   the banner for that version only — a newer one re-shows it. No
+   version number is hardcoded anywhere: both numbers come from the
+   served files, so the check works for every future deploy with no
+   maintenance. The banner lives inside .main (top of the dashboard),
+   never on the login screen. */
+const UPDATE_CHECK_MS = 60000;
+let updateCheckerStarted = false;
+let updateDismissedVersion = null; // version the user dismissed; a newer one re-shows the banner
+let updateLatestSeen = null;
+function runningVersion() {
+  const scripts = document.querySelectorAll("script[src]");
+  for (const s of scripts) {
+    const m = /app\.js\?v=(\d+)/.exec(s.src || "");
+    if (m) return parseInt(m[1], 10);
+  }
+  return null;
+}
+function showUpdateBanner() {
+  const b = document.getElementById("update-banner");
+  if (b) b.classList.remove("hidden");
+}
+function hideUpdateBanner() {
+  const b = document.getElementById("update-banner");
+  if (b) b.classList.add("hidden");
+}
+async function checkForUpdate() {
+  if (document.hidden) return;
+  if (callState !== "idle") return; // never interrupt a call
+  const dash = document.getElementById("dashboard");
+  if (!dash || dash.classList.contains("hidden")) return; // login screen
+  const running = runningVersion();
+  if (running == null) return;
+  let html;
+  try {
+    const r = await fetch(location.pathname, { cache: "no-store" });
+    if (!r.ok) return;
+    html = await r.text();
+  } catch (_) { return; } // offline / failed fetch: stay silent, try again next minute
+  const m = /app\.js\?v=(\d+)/.exec(html);
+  if (!m) return;
+  updateLatestSeen = parseInt(m[1], 10);
+  if (updateLatestSeen > running && updateLatestSeen !== updateDismissedVersion) showUpdateBanner();
+}
+function startUpdateChecker() {
+  if (updateCheckerStarted) return;
+  updateCheckerStarted = true;
+  const reloadBtn = document.getElementById("update-reload");
+  if (reloadBtn) reloadBtn.addEventListener("click", () => location.reload());
+  const dismissBtn = document.getElementById("update-dismiss");
+  if (dismissBtn) dismissBtn.addEventListener("click", () => {
+    updateDismissedVersion = updateLatestSeen;
+    hideUpdateBanner();
+  });
+  setInterval(checkForUpdate, UPDATE_CHECK_MS);
+  document.addEventListener("visibilitychange", () => { if (!document.hidden) checkForUpdate(); });
+}
 
 checkSession();

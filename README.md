@@ -1328,6 +1328,9 @@ Two pieces the v21 restyle left out:
   and after; served app.js/style.css byte-identical to local; live KV
   untouched (46 leads, 0 callLogs).
 
+## v25 — "New version available" notice (2026-11-22)
+Rome keeps a dashboard tab open across deploys and reports "i still dont see the new dashboard" — the SPA never reloads itself, so a stale tab runs the old version indefinitely. Every 60s the dashboard now fetches the current page (no query string, cache:"no-store") and compares the app.js v=NN in the returned HTML against the v=NN of the script tag that loaded the running bundle; if the server is newer, a slim banner at the top of the dashboard ("A new version is available" + Reload + × dismiss) offers location.reload(). The check never runs while a call is in progress, while the tab is hidden (re-checked on visibilitychange), or on the login screen; failed fetches stay silent. Dismissing hides the banner for that version only — a newer one re-shows it. No version number is hardcoded anywhere; both numbers come from the served files. Harness ~/workspace/v25-harness.mjs: 62/62 (static + vm functional + 6 live). Live KV untouched (46 leads, 0 callLogs).
+
 ## v24 — Login hint removed (2026-11-22)
 Rome: remove the "Username, not your email — romanroyce, loganwells, or braylengarrett" hint from the login page. Removed the hint span under the Username field; the "@" login error now reads "Use your username, not your email." (no username list — the team usernames are no longer listed anywhere on the login screen). No behavior change. Live KV untouched (46 leads, 0 callLogs).
 

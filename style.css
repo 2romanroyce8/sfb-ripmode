@@ -1604,3 +1604,12 @@ html:has(.shell[data-appearance="light"]) .db-delta.down{color:#b42318}
 .db-panels{display:grid;grid-template-columns:1fr 1fr;gap:12px}
 @media(max-width:820px){.db-panels{grid-template-columns:1fr}}
 .db-panel .seg-toggle{margin-top:12px}
+
+/* ---------- v25 (2026-11-22) — "new version available" banner ---------- */
+.update-banner{display:flex;align-items:center;gap:10px;padding:9px 16px;background:var(--panel);border-bottom:1px solid var(--line);color:var(--text);font-size:13px;font-weight:600}
+.update-banner-dot{width:8px;height:8px;border-radius:50%;background:#34d399;flex:none;box-shadow:0 0 0 3px rgba(52,211,153,.18)}
+.update-banner-text{flex:1;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.update-banner-btn{border:0;border-radius:999px;background:#34d399;color:#06281c;font:inherit;font-weight:700;padding:6px 14px;cursor:pointer;white-space:nowrap}
+.update-banner-btn:hover{background:#4be0a8}
+.update-banner-x{border:0;background:none;color:var(--muted);font:inherit;font-size:18px;line-height:1;padding:4px 8px;cursor:pointer}
+.update-banner-x:hover{color:var(--text)}
