@@ -588,8 +588,10 @@ async function handleApi(request, env) {
   // A dial / talk minute / email is refused when EITHER the user's own
   // cap OR the team cap is hit, and the refusal names which one.
   // Texts are sent by the receptionist worker as the system (no user
-  // attribution), so this worker only READS the team text count via the
-  // proxy below — it never invents per-person text numbers.
+  // attribution), so this worker reads the team text count via the proxy
+  // below — it never invents per-person text numbers — and reports each
+  // successful dashboard send back to it (POST /api/caps/record-external)
+  // so the receptionist's count stays the TRUE team total.
   const CAPS_DEFAULTS = {
     team: { dials: 500, talkMin: 150, sms: 100, emails: 100, maxCallSec: 225 },
     users: {
@@ -646,9 +648,11 @@ async function handleApi(request, env) {
   async function saveCapsCounters(env, date, user, c) {
     await env.RIPMODE_KV.put("caps:" + date + (user ? ":" + user : ""), JSON.stringify(c));
   }
-  // SMS count lives on the receptionist worker (it sends the texts).
-  // Defensive: the sibling agent is adding GET /api/caps there — until
-  // it is live, return null with a note and NEVER fail the whole response.
+  // SMS count lives on the receptionist worker (it sends the texts, and
+  // successful dashboard sends are reported back to it via POST
+  // /api/caps/record-external so its count is the TRUE team total).
+  // Defensive: if the receptionist count is unavailable, return null
+  // with a note and NEVER fail the whole response.
   async function capsSmsFromReceptionist() {
     const r = await receptionistFetch("/api/caps");
     if (r.ok && r.data && typeof r.data === "object") {
@@ -914,12 +918,23 @@ async function handleApi(request, env) {
     const fresh = await getCapsCounters(env, capsDate);
     fresh.sms = (fresh.sms || 0) + 1;
     await saveCapsCounters(env, capsDate, null, fresh);
+    // Report the send to Ava's counter so the combined team total stays
+    // under the daily limit: the receptionist only counts its own sends,
+    // so without this Ava could send up to the full team limit on top of
+    // dashboard texts. Best-effort: a failure to record NEVER fails this
+    // send or the stored message — it is logged on the message instead.
+    let capRecorded = false;
+    try {
+      const r = await receptionistFetch("/api/caps/record-external", "POST", { count: 1, source: "dashboard", at: new Date().toISOString() });
+      capRecorded = !!r.ok;
+    } catch (_) { capRecorded = false; }
+    msg.sms.capRecorded = capRecorded;
     for (const fu of (s.followUps || [])) {
       if (fu.leadId === leadId && fu.kind === "sms" && fu.status === "pending") fu.status = "sent";
     }
     await saveState(env, s);
     return json({
-      ok: true, status: "sent-unconfirmed", sid: res.sid, messageId: msg.id,
+      ok: true, status: "sent-unconfirmed", sid: res.sid, messageId: msg.id, capRecorded,
       teamSmsUsed: used + 1, teamSmsLimit: limits.team.sms,
       ...(smsRes.sms === null ? { smsSourceNote: "Receptionist text count was unavailable — the cap check used dashboard-sent texts only." } : {}),
     });
