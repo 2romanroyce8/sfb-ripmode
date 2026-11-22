@@ -1636,3 +1636,55 @@ html:has(.shell[data-appearance="light"]) .db-sample-tag{background:rgba(180,130
 .db-ret-sw{display:inline-block;width:10px;height:10px;border-radius:2px;margin-right:6px;vertical-align:-1px}
 .stat-boxes--4{grid-template-columns:repeat(4,1fr)}
 @media(max-width:820px){.stat-boxes--4{grid-template-columns:repeat(2,1fr)}}
+
+/* ----- v27 (2026-11-22) — pixel-match the Dashboard sample mode to the reference ----- */
+/* Sample heading: just "Dashboard", 20px, no eyebrow — as in the reference. */
+.db-sample-heading h1{font-size:20px}
+/* The Sample toggle is a bordered pill now — unmissable next to the title. */
+.db-sample-toggle{border:1px solid rgba(255,204,0,.45);background:rgba(255,204,0,.08);border-radius:999px;padding:7px 12px}
+.db-sample-toggle-label{color:var(--text)}
+/* Sample stat cards: the reference's 2-row layout (label + pill on top;
+   big number + plain-text delta on one baseline row), roomier padding. */
+.db-stat-sample{padding:20px;gap:10px}
+.db-stat-sample .db-stat-num{font-size:26px}
+.db-stat-sample .db-stat-label{font-size:13px}
+.db-stat-numline{display:flex;align-items:baseline;gap:10px}
+.db-stat-delta{font-size:12px;color:var(--muted);white-space:nowrap}
+.db-delta-plain{background:none!important;padding:0;border-radius:0}
+.db-sample-view .db-stat-pct.down{color:#ff453a}
+.db-info{display:inline-flex;vertical-align:-2px;color:var(--muted)}
+.db-info svg{display:block}
+/* Chart header: title + info icon left, "● 7.5% vs last month" right. */
+.db-chart-head{display:flex;align-items:center;justify-content:space-between;gap:12px;flex-wrap:wrap}
+.db-chart-title{display:flex;align-items:center;gap:6px;font-size:15px;font-weight:700;color:var(--text)}
+.db-chart-delta{display:flex;align-items:center;gap:6px;font-size:13px}
+.db-chart-delta .db-dot{width:8px;height:8px;border-radius:50%;background:#34d399}
+.db-muted{color:var(--muted)}
+/* Sample chart: light-grey line + white gradient fill + dashed gridlines,
+   no per-point dots, pinned Feb 17 vertical line + white dot. */
+.db-sample-line{stroke:#d4d4d8;stroke-width:1.75;stroke-linejoin:round;stroke-linecap:round}
+.db-sample-vline{stroke:rgba(255,255,255,.35);stroke-width:1}
+.db-sample-dot{fill:#fff;stroke:#18181b;stroke-width:1.5}
+.an-grid-dash{stroke:#3f3f46;stroke-width:1;stroke-dasharray:3 4}
+.an-tip-dot{display:inline-block;width:8px;height:8px;border-radius:50%;background:#fff;flex:none}
+.db-tip-date{font-size:12px;color:var(--muted);margin-bottom:2px}
+.db-tip-row{display:flex;align-items:center;gap:6px;font-size:13px}
+.db-tip-row b{font-weight:700}
+/* Pinned tooltip: right of the Feb 17 vertical line, vertically
+   centered on the dot — as in the reference. */
+.db-sample-tip{left:23%;top:19%;transform:translateX(0)}
+/* Leads Management (sample): text tabs, segmented bar, Open / In Progress sub-cards. */
+.db-lm-tabs{display:flex;gap:24px;border-bottom:1px solid var(--line)}
+.db-lm-tabs button{border:0;background:none;padding:0 0 10px;font:inherit;font-size:14px;font-weight:600;color:var(--muted);cursor:pointer}
+.db-lm-tabs button[aria-pressed="true"]{color:var(--text);box-shadow:inset 0 -2px 0 #f4f4f5}
+.db-lm-seg{display:flex;gap:8px;height:8px;margin:14px 0}
+.db-lm-seg span{border-radius:999px}
+.db-lm-cards{display:grid;grid-template-columns:1fr 1fr;gap:12px}
+.db-lm-card{display:flex;flex-direction:column;align-items:flex-start;gap:6px;background:var(--panel-2);border:1px solid var(--line);border-radius:12px;padding:16px}
+.db-lm-bar{width:44px;height:4px;border-radius:999px;background:#55555c}
+.db-lm-label{font-size:13px;color:var(--muted)}
+.db-lm-num{font-size:20px;font-weight:700;color:var(--text)}
+.db-lm-num span{font-size:13px;font-weight:500;color:var(--muted)}
+/* Retention (sample): ⋮ menu instead of a button; legend ABOVE the bars. */
+.db-ret-menu{font-size:18px;line-height:1;color:var(--muted);padding:2px 6px;cursor:pointer}
+.db-sample-view .db-ret-legend{margin:14px 0 0}

@@ -1175,7 +1175,7 @@ function render() {
   const sub = currentTab === "leads"
     ? `${(state.leads || []).length} leads. New leads start in the Pipeline at "New".`
     : currentTab === "dashboard" && dbSample
-    ? "Sample preview — the numbers below come from the design reference, not your real data."
+    ? "" // v27: in sample mode the heading is just "Dashboard" (as in the reference); the SAMPLE banner below says what is sample.
     : meta[1];
   let body = "";
   if (currentTab === "dashboard") body = renderDashboard();
@@ -1191,7 +1191,11 @@ function render() {
   else if (currentTab === "announcements") body = renderAnnouncements();
   else if (currentTab === "today") body = renderToday();
   else if (currentTab === "connections") body = renderConnections();
-  main.innerHTML = `<div class="page-heading"><div><span class="eyebrow">YOUR WORKSPACE</span><h1>${esc(meta[0])}</h1>${sub ? `<p>${esc(sub)}</p>` : ""}</div>${currentTab === "dashboard" ? dbSampleToggleHtml() : ""}</div>` + body;
+  // v27: in sample mode the Dashboard heading is just "Dashboard" (no
+  // eyebrow, no subtitle) — exactly as the reference shows it. The
+  // SAMPLE banner inside the body says what is sample.
+  const sampleHeading = currentTab === "dashboard" && dbSample;
+  main.innerHTML = `<div class="page-heading${sampleHeading ? " db-sample-heading" : ""}"><div>${sampleHeading ? "" : `<span class="eyebrow">YOUR WORKSPACE</span>`}<h1>${esc(meta[0])}</h1>${sub ? `<p>${esc(sub)}</p>` : ""}</div>${currentTab === "dashboard" ? dbSampleToggleHtml() : ""}</div>` + body;
   // Full-panel Call Log (2026-11-21, v23): the iPad fills the whole panel —
   // the shell class drives the height/width rules in ripmode.css.
   const shell = $("#shell");
@@ -2406,8 +2410,9 @@ function computeAnalytics(st, repCalls, range, nowMs, scopeUser) {
    plotted fake points. Pure SVG, no library. */
 let _anChartData = [];
 function anChartTipHtml(d) {
-  // Sample revenue points (v26): the tooltip shows the day + Revenue $.
-  if (d && d.revenue != null) return `<b>${esc(d.tip || d.label)}</b><br>Revenue $${Number(d.revenue).toLocaleString("en-US")}`;
+  // Sample revenue points (v26, v27 tooltip matches the reference):
+  // the tooltip shows the day + a white dot + "Revenue $".
+  if (d && d.revenue != null) return `<div class="db-tip-date">${esc(d.tip || d.label)}</div><div class="db-tip-row"><i class="an-tip-dot"></i><span>Revenue</span><b>$${Number(d.revenue).toLocaleString("en-US")}</b></div>`;
   return `<b>${esc(d.label)}</b><br>${d.dials} dial${d.dials === 1 ? "" : "s"} · ${d.connected} connected · ${d.meetings} meeting${d.meetings === 1 ? "" : "s"}`;
 }
 function anAreaChartHtml(a) {
@@ -2509,11 +2514,17 @@ const SAMPLE_DATA = {
   revenue: 30240, revenueDeltaPct: "7.5%",
   leadsOpen: 114, leadsInProgress: 62,
   retention: 95, retentionDeltaPct: "12%",
-  // Daily revenue, Feb 14 – Mar 15, tracing the reference chart's wavy
-  // line. Only Feb 17 ($28,917) is a labeled value in the reference; the
-  // other points follow the same shape so the chart looks like the shot.
+  // Daily revenue, Feb 14 – Mar 15, traced from the reference chart's
+  // actual line (2026-11-22, v27 pixel-match): the y-axis calibrates at
+  // 49px per $10k (40k/30k/20k/10k/0 gridlines) and the Feb 17 tooltip
+  // dot lands on $28,917 exactly, which anchors the trace. Shape: ~28.5k
+  // at Feb 14, dip to ~25k Feb 20–25, sharp rise to ~31.4k Feb 27,
+  // peaks ~31.9k Mar 1 and Mar 7, dips to ~28.5k Mar 6 and Mar 9, ends
+  // ~30.4k Mar 15. Second pass (v27b): Feb 14 start and the Mar dips
+  // re-read from the 2x chart crop — the line never drops to 27k after
+  // Feb 25, and Mar 3–5 stays flat ~30.5k.
   revenueSeries: (() => {
-    const vals = [29600, 28900, 29200, 28917, 29800, 30100, 29600, 30500, 31200, 30800, 31400, 30900, 30100, 30600, 31200, 31800, 31100, 31600, 30900, 31400, 30700, 31300, 31900, 31500, 30900, 31600, 31200, 31800, 31100, 31700];
+    const vals = [28500, 29400, 28900, 28917, 27500, 26500, 25500, 26000, 27000, 28000, 25500, 25000, 29400, 31400, 29400, 31900, 30900, 30500, 30500, 30400, 28500, 31900, 29900, 28500, 29400, 30400, 28500, 28900, 29900, 30400];
     const start = new Date(2026, 1, 14);
     return vals.map((v, i) => {
       const d = new Date(start.getTime() + i * 86400000);
@@ -2524,53 +2535,74 @@ const SAMPLE_DATA = {
       };
     });
   })(),
-  // Retention bar groups (Enterprises / SMEs / Startups). Heights
-  // approximate the reference chart's visual shape; no per-bar value is
-  // labeled in the reference, so none is shown here either.
-  retentionBars: [[84, 95, 78], [76, 90, 84], [88, 97, 82], [80, 92, 86], [85, 96, 80], [78, 91, 85], [90, 98, 83]],
+  // Retention bar groups (Enterprises / SMEs / Startups), heights traced
+  // from the reference's grouped bars (2026-11-22, v27): measured bar
+  // tops against the tallest bar (Startups, group 7). The reference
+  // draws each group left-to-right as SMEs (white) / Enterprises (dark)
+  // / Startups (mid grey) — the legend order is NOT the bar order.
+  // No per-bar value is labeled in the reference, so none is shown here.
+  retentionBars: [[44, 76, 92], [29, 72, 80], [50, 83, 97], [37, 67, 82], [48, 84, 97], [35, 68, 74], [45, 87, 100]],
 };
-/* Sample revenue area chart — same SVG geometry as anAreaChartHtml, but
-   the y-axis is dollars (0–40k) and the hover tooltip shows Revenue $. */
+/* Sample revenue area chart (2026-11-22, v27 pixel-match) — rebuilt to
+   look like the reference exactly: light-grey line (not green), white
+   gradient area fill, dashed gridlines, no per-point dots, no legend,
+   and the Feb 17 hover state PINNED (vertical line + white dot +
+   tooltip + white "Feb 17" pill on the x-axis), exactly as the shot
+   shows it. Hovering another day moves the tooltip; leaving the chart
+   restores the pinned Feb 17 state (see bindAreaChart). Geometry is
+   carried on data-* attributes so the hover math reads it back. */
 function sampleRevenueChartHtml(points) {
-  const W = 660, H = 230, padL = 40, padR = 14, padT = 14, padB = 26;
+  const W = 860, H = 252, padL = 44, padR = 12, padT = 12, padB = 30;
   const yMax = 40000;
   const n = points.length;
-  const x = (i) => n === 1 ? W / 2 : padL + (i * (W - padL - padR)) / (n - 1);
+  const x = (i) => padL + (i * (W - padL - padR)) / (n - 1);
   const y = (v) => padT + (1 - v / yMax) * (H - padT - padB);
+  // Straight polyline with rounded joins: the reference's line is made
+  // of short straight day-to-day segments, not a smooth spline.
   const line = points.map((d, i) => (i ? "L" : "M") + x(i).toFixed(1) + "," + y(d.revenue).toFixed(1)).join(" ");
   const area = line + ` L${x(n - 1).toFixed(1)},${y(0).toFixed(1)} L${x(0).toFixed(1)},${y(0).toFixed(1)} Z`;
   const ticks = [0, 10000, 20000, 30000, 40000];
   const tickLabel = (v) => v === 0 ? "0" : (v / 1000) + "k";
   const xLabels = [0, 3, 6, 11, 17, 23, 29]; // Feb 14, Feb 17, Feb 20, Feb 25, Mar 3, Mar 9, Mar 15 — as in the reference
+  const hx = x(3), hy = y(points[3].revenue); // Feb 17, $28,917 — the pinned hover state
+  const tipHtml = `<div class="db-tip-date">${esc(points[3].tip)}</div><div class="db-tip-row"><i class="an-tip-dot"></i><span>Revenue</span><b>$${Number(points[3].revenue).toLocaleString("en-US")}</b></div>`;
   return `<div class="an-chart-wrap">
-  <svg data-an-chart viewBox="0 0 ${W} ${H}" width="100%" role="img" aria-label="Sample revenue over time">
-    <defs><linearGradient id="an-area-grad" x1="0" y1="0" x2="0" y2="1"><stop offset="0%" stop-color="#34d399" stop-opacity="0.28"/><stop offset="100%" stop-color="#34d399" stop-opacity="0"/></linearGradient></defs>
-    ${ticks.map((v) => `<line x1="${padL}" y1="${y(v).toFixed(1)}" x2="${W - padR}" y2="${y(v).toFixed(1)}" class="an-grid"/><text x="${padL - 8}" y="${(y(v) + 4).toFixed(1)}" class="an-axis" text-anchor="end">${tickLabel(v)}</text>`).join("")}
-    <path d="${area}" fill="url(#an-area-grad)"/>
-    <path d="${line}" class="an-line-dials" fill="none"/>
-    ${points.map((d, i) => `<circle cx="${x(i).toFixed(1)}" cy="${y(d.revenue).toFixed(1)}" r="3" class="an-dot-dials"/>`).join("")}
-    ${xLabels.map((i) => `<text x="${x(i).toFixed(1)}" y="${H - 8}" class="an-axis" text-anchor="middle">${esc(points[i].label)}</text>`).join("")}
-    <circle id="an-chart-dot" r="4.5" class="an-dot-hl" style="display:none"/>
+  <svg data-an-chart data-sample-chart="1" data-w="${W}" data-h="${H}" data-padl="${padL}" data-padr="${padR}" data-padt="${padT}" data-padb="${padB}" data-ymax="${yMax}" viewBox="0 0 ${W} ${H}" width="100%" role="img" aria-label="Sample revenue over time">
+    <defs><linearGradient id="db-sample-area-grad" x1="0" y1="0" x2="0" y2="1"><stop offset="0%" stop-color="#ffffff" stop-opacity="0.16"/><stop offset="100%" stop-color="#ffffff" stop-opacity="0"/></linearGradient></defs>
+    ${ticks.map((v) => `<line x1="${padL}" y1="${y(v).toFixed(1)}" x2="${W - padR}" y2="${y(v).toFixed(1)}" class="an-grid-dash"/><text x="${padL - 8}" y="${(y(v) + 4).toFixed(1)}" class="an-axis" text-anchor="end" fill="#9c9ca3" font-size="12">${tickLabel(v)}</text>`).join("")}
+    <path d="${area}" fill="url(#db-sample-area-grad)"/>
+    <line x1="${hx.toFixed(1)}" y1="${padT}" x2="${hx.toFixed(1)}" y2="${y(0).toFixed(1)}" class="db-sample-vline"/>
+    <path d="${line}" class="db-sample-line" fill="none"/>
+    ${xLabels.map((i) => i === 3
+      ? `<g><rect x="${(x(i) - 32).toFixed(1)}" y="${H - 24}" width="64" height="22" rx="11" fill="#f4f4f5"/><text x="${x(i).toFixed(1)}" y="${H - 9}" class="an-axis" text-anchor="middle" fill="#18181b" font-size="12" font-weight="600">${esc(points[i].label)}</text></g>`
+      : i === n - 1
+      ? `<text x="${x(i).toFixed(1)}" y="${H - 8}" class="an-axis" text-anchor="end" fill="#9c9ca3" font-size="12">${esc(points[i].label)}</text>`
+      : `<text x="${x(i).toFixed(1)}" y="${H - 8}" class="an-axis" text-anchor="middle" fill="#9c9ca3" font-size="12">${esc(points[i].label)}</text>`).join("")}
+    <circle id="an-chart-dot" cx="${hx.toFixed(1)}" cy="${hy.toFixed(1)}" r="5" class="db-sample-dot"/>
     <rect data-an-chart-hit x="${padL}" y="${padT}" width="${W - padL - padR}" height="${H - padT - padB}" fill="transparent"/>
   </svg>
-  <div class="an-chart-tip hidden" id="an-chart-tip"></div>
-  <div class="an-chart-legend"><span><i class="an-sw-dials"></i>Revenue</span></div>
+  <div class="an-chart-tip db-sample-tip" id="an-chart-tip">${tipHtml}</div>
 </div>`;
 }
-/* Sample retention grouped bars (Enterprises / SMEs / Startups). */
+/* Sample retention grouped bars (2026-11-22, v27 pixel-match). The
+   reference draws each group left-to-right as SMEs (white) /
+   Enterprises (dark) / Startups (mid grey) — the legend order is NOT
+   the bar order, so the draw order is [1, 0, 2] over the
+   [Enterprises, SMEs, Startups] data. Returns the SVG only; the
+   legend sits ABOVE the chart in the panel, as in the reference. */
 function sampleRetentionBarsHtml() {
   const groups = SAMPLE_DATA.retentionBars;
-  const W = 560, H = 150, base = 130, bw = 14, inGap = 6, pitch = 80;
-  const colors = ["#43434a", "#f2f2f5", "#8e8e96"];
-  const rects = groups.map((g, gi) => g.map((h, bi) => {
-    const bh = Math.round((h / 100) * 110);
-    const bx = gi * pitch + bi * (bw + inGap);
-    return `<rect x="${bx}" y="${base - bh}" width="${bw}" height="${bh}" rx="2" fill="${colors[bi]}"/>`;
+  const W = 560, H = 170, base = 150, bw = 12, inGap = 5, pitch = 78;
+  const order = [1, 0, 2];
+  const colors = ["#f2f2f5", "#43434a", "#8e8e96"];
+  const rects = groups.map((g, gi) => order.map((bi, k) => {
+    const bh = Math.round((g[bi] / 100) * 130);
+    const bx = gi * pitch + k * (bw + inGap);
+    return `<rect x="${bx}" y="${base - bh}" width="${bw}" height="${bh}" rx="2" fill="${colors[k]}"/>`;
   }).join("")).join("");
   return `<svg viewBox="0 0 ${W} ${H}" width="100%" role="img" aria-label="Sample retention by segment">
     <line x1="0" y1="${base}" x2="${W}" y2="${base}" class="an-grid"/>${rects}
-  </svg>
-  <div class="db-ret-legend"><span><i class="db-ret-sw" style="background:#43434a"></i>Enterprises</span><span><i class="db-ret-sw" style="background:#f2f2f5"></i>SMEs</span><span><i class="db-ret-sw" style="background:#8e8e96"></i>Startups</span></div>`;
+  </svg>`;
 }
 function dbSampleToggleHtml() {
   return `<div class="db-sample-toggle">
@@ -2579,60 +2611,68 @@ function dbSampleToggleHtml() {
     ${dbSample ? `<span class="db-sample-warn">Preview — not real numbers</span>` : ""}
   </div>`;
 }
-/* The Dashboard rendered with the reference's numbers. Every card/panel
-   carries a SAMPLE tag, and the banner up top says what is sample and
-   that the Revenue figures are real Stripe data. The Revenue card itself
-   is the real one (stripeRevenueCardHtml) — untouched by the preview. */
+/* The Dashboard rendered with the reference's numbers (2026-11-22, v27
+   pixel-match). Layout follows the reference shot exactly: 2-row stat
+   cards (label + pill on top, big number + plain-text delta on one
+   line), the Revenue-over-time card with its delta top-right and the
+   Feb 17 hover state pinned, Leads Management as text tabs + segmented
+   bar + Open / In Progress sub-cards, Retention with the legend above
+   the bars. Every card/panel carries a SAMPLE tag, and the banner up
+   top says what is sample and that the Revenue figures are real Stripe
+   data. The Revenue card itself is the real one (stripeRevenueCardHtml)
+   — untouched by the preview. */
 function renderDashboardSample() {
   const S = SAMPLE_DATA;
   _anChartData = S.revenueSeries;
   const revenueNote = stripeTotals ? " Revenue figures are real Stripe data." : "";
+  const infoSvg = `<svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><circle cx="12" cy="12" r="10"/><path d="M12 16v-4"/><path d="M12 8h.01"/></svg>`;
   const lmBody = dbLeadsTab === "status"
-    ? anBarRow("Open", S.leadsOpen, S.leadsOpen, "leads") + anBarRow("In Progress", S.leadsInProgress, S.leadsOpen, "leads")
+    ? `<div class="db-lm-seg"><span style="flex:41;background:#333338"></span><span style="flex:23;background:#75757d"></span><span style="flex:17;background:#4a4a50"></span><span style="flex:14;background:#e8e8ec"></span></div>
+    <div class="db-lm-cards">
+      <div class="db-lm-card"><span class="db-lm-bar"></span><span class="db-lm-label">Open</span><span class="db-lm-num">${S.leadsOpen} <span>leads</span></span></div>
+      <div class="db-lm-card"><span class="db-lm-bar"></span><span class="db-lm-label">In Progress</span><span class="db-lm-num">${S.leadsInProgress} <span>leads</span></span></div>
+    </div>`
     : `<p class="notice">Sample data only covers the Status view — switch Sample data off to see your real Sources and Qualification.</p>`;
   return `
+  <div class="db-sample-view">
   <div class="db-sample-banner"><b>SAMPLE DATA</b> — these numbers are a preview from the design reference, not your real numbers.${revenueNote} Switch Sample data off to see your real numbers.</div>
   <div class="db-stats">
-    <button type="button" class="db-stat" data-dbgo="leads">
-      <span class="db-stat-top"><span class="db-stat-label">Leads</span><span class="db-stat-pct up">● ${S.leadsPct}</span></span>
-      <span class="db-stat-num">${S.leads}</span>
-      <span class="db-stat-sub">${dbDeltaPill(S.leadsDelta)} <span>vs last week</span></span>
-      <span class="db-sample-tag">SAMPLE</span>
+    <button type="button" class="db-stat db-stat-sample" data-dbgo="leads">
+      <span class="db-stat-top"><span class="db-stat-label">Leads <span class="db-sample-tag">SAMPLE</span></span><span class="db-stat-pct up">● ${S.leadsPct}</span></span>
+      <span class="db-stat-numline"><span class="db-stat-num">${S.leads}</span><span class="db-stat-delta"><span class="db-delta up db-delta-plain">+${S.leadsDelta}</span> <span>vs last week</span></span></span>
     </button>
-    <button type="button" class="db-stat" data-dbgo="analytics">
-      <span class="db-stat-top"><span class="db-stat-label">Conversion rate</span><span class="db-stat-pct up">● ${S.conversionPct}</span></span>
-      <span class="db-stat-num">${S.conversionRate}%</span>
-      <span class="db-stat-sub">${dbDeltaPill(S.conversionDelta)} <span>vs last week</span></span>
-      <span class="db-sample-tag">SAMPLE</span>
+    <button type="button" class="db-stat db-stat-sample" data-dbgo="analytics">
+      <span class="db-stat-top"><span class="db-stat-label">Conversion Rate <span class="db-sample-tag">SAMPLE</span></span><span class="db-stat-pct up">● ${S.conversionPct}</span></span>
+      <span class="db-stat-numline"><span class="db-stat-num">${S.conversionRate}%</span><span class="db-stat-delta"><span class="db-delta up db-delta-plain">+${S.conversionDelta}</span> <span>vs last week</span></span></span>
     </button>
-    <button type="button" class="db-stat" data-dbgo="calendar">
-      <span class="db-stat-top"><span class="db-stat-label">CLV</span><span class="db-stat-pct down">● ${S.clvPct}</span></span>
-      <span class="db-stat-num">${S.clv}</span>
-      <span class="db-stat-sub"><span class="db-delta up">${S.clvDelta}</span> <span>vs last week</span></span>
-      <span class="db-sample-tag">SAMPLE</span>
+    <button type="button" class="db-stat db-stat-sample" data-dbgo="calendar">
+      <span class="db-stat-top"><span class="db-stat-label">CLV <span class="db-info">${infoSvg}</span> <span class="db-sample-tag">SAMPLE</span></span><span class="db-stat-pct down">● ${S.clvPct}</span></span>
+      <span class="db-stat-numline"><span class="db-stat-num">${S.clv}</span><span class="db-stat-delta"><span class="db-delta up db-delta-plain">${S.clvDelta}</span> <span>vs last week</span></span></span>
     </button>
   </div>
   ${stripeRevenueCardHtml()}
   <div class="card db-chart-card">
-    <div class="db-card-head"><div><div class="section-title" style="margin-top:0">Revenue over time <span class="db-sample-tag">SAMPLE</span></div>
-    <div class="db-sample-big">$${S.revenue.toLocaleString("en-US")} <span class="db-delta up">+${S.revenueDeltaPct} vs last month</span></div></div></div>
+    <div class="db-chart-head"><span class="db-chart-title">Revenue over time <span class="db-info">${infoSvg}</span> <span class="db-sample-tag">SAMPLE</span></span><span class="db-chart-delta"><span class="db-dot"></span><span class="db-delta up db-delta-plain">+${S.revenueDeltaPct}</span> <span class="db-muted">vs last month</span></span></div>
+    <div class="db-sample-big">$${S.revenue.toLocaleString("en-US")}</div>
     ${sampleRevenueChartHtml(S.revenueSeries)}
   </div>
   <div class="db-panels">
     <div class="card db-panel">
-      <div class="db-card-head"><div class="section-title" style="margin-top:0">Leads Management <span class="db-sample-tag">SAMPLE</span></div><button class="btn" data-dbgo="pipeline">View Pipeline</button></div>
-      <div class="seg-toggle" role="group" aria-label="Leads management view">
+      <div class="db-card-head"><div class="section-title" style="margin-top:0">Leads Management <span class="db-sample-tag">SAMPLE</span></div></div>
+      <div class="db-lm-tabs" role="group" aria-label="Leads management view">
         <button type="button" data-dbleads="status" aria-pressed="${dbLeadsTab === "status"}">Status</button>
         <button type="button" data-dbleads="sources" aria-pressed="${dbLeadsTab === "sources"}">Sources</button>
         <button type="button" data-dbleads="qual" aria-pressed="${dbLeadsTab === "qual"}">Qualification</button>
       </div>
-      <div style="margin-top:14px">${lmBody}</div>
+      <div style="margin-top:2px">${lmBody}</div>
     </div>
     <div class="card db-panel">
-      <div class="db-card-head"><div class="section-title" style="margin-top:0">Retention Rate <span class="db-sample-tag">SAMPLE</span></div><button class="btn" data-dbgo="analytics">View Analytics</button></div>
-      <div class="db-sample-big">${S.retention}% <span class="db-delta up">+${S.retentionDeltaPct} vs last month</span></div>
+      <div class="db-card-head"><div class="section-title" style="margin-top:0">Retention Rate <span class="db-sample-tag">SAMPLE</span></div><span class="db-ret-menu" aria-hidden="true">⋮</span></div>
+      <div class="db-sample-big">${S.retention}% <span class="db-delta up db-delta-plain">+${S.retentionDeltaPct}</span> <span class="db-muted">vs last month</span></div>
+      <div class="db-ret-legend"><span><i class="db-ret-sw" style="background:#43434a"></i>Enterprises</span><span><i class="db-ret-sw" style="background:#f2f2f5"></i>SMEs</span><span><i class="db-ret-sw" style="background:#8e8e96"></i>Startups</span></div>
       ${sampleRetentionBarsHtml()}
     </div>
+  </div>
   </div>`;
 }
 
@@ -2841,22 +2881,31 @@ function renderAnalytics() {
 }
 
 /* Area-chart hover (v22, extracted 2026-11-21 v23 so the Dashboard
-   overview can reuse it): nearest day by mouse x, tooltip shows the
-   real values for that day. Positions are computed in viewBox units
-   so the tooltip stays aligned at any rendered width. Wires the
+   overview can reuse it; v27: geometry + yMax read from the SVG's own
+   data-* attributes so the sample revenue chart (W=860/H=252/padL=44/
+   yMax=40000) and the real dials chart (W=660/H=230/padL=34, yMax =
+   max dials) share one binding. The sample chart also restores its
+   pinned Feb 17 state on mouseleave — vertical line + dot + tooltip
+   back to Feb 17, exactly as the reference shows it. Wires the
    [data-an-chart] SVG already rendered on the page, using
    _anChartData (set by the render function). */
 function bindAreaChart() {
 // Area chart hover (v22): nearest day by mouse x, tooltip shows the
-// real values for that day. Positions are computed in viewBox units so
+// values for that day. Positions are computed in viewBox units so
 // the tooltip stays aligned at any rendered width.
 const chartSvg = document.querySelector("[data-an-chart]");
 if (chartSvg) {
   const tip = $("#an-chart-tip");
   const dot = $("#an-chart-dot");
   const hit = chartSvg.querySelector("[data-an-chart-hit]");
+  const vline = chartSvg.querySelector(".db-sample-vline");
   const data = _anChartData || [];
-  const W = 660, H = 230, padL = 34, padR = 14, padT = 14, padB = 26;
+  const isSample = chartSvg.dataset.sampleChart === "1";
+  const W = parseFloat(chartSvg.dataset.w || "660"), H = parseFloat(chartSvg.dataset.h || "230");
+  const padL = parseFloat(chartSvg.dataset.padl || "34"), padR = parseFloat(chartSvg.dataset.padr || "14");
+  const padT = parseFloat(chartSvg.dataset.padt || "14"), padB = parseFloat(chartSvg.dataset.padb || "26");
+  const yMax = chartSvg.dataset.ymax ? parseFloat(chartSvg.dataset.ymax) : Math.max(1, ...data.map((x) => x.dials));
+  const valOf = (d) => d.revenue != null ? d.revenue : (d.dials ?? 0);
   const move = (e) => {
     if (!data.length || !tip || !dot) return;
     const rect = chartSvg.getBoundingClientRect();
@@ -2867,9 +2916,9 @@ if (chartSvg) {
     i = Math.max(0, Math.min(data.length - 1, i));
     const d = data[i];
     const cx = data.length === 1 ? W / 2 : padL + (i * plotW) / (data.length - 1);
-    const max = Math.max(1, ...data.map((x) => x.dials));
-    const cy = padT + (1 - d.dials / max) * (H - padT - padB);
+    const cy = padT + (1 - valOf(d) / yMax) * (H - padT - padB);
     dot.setAttribute("cx", cx.toFixed(1)); dot.setAttribute("cy", cy.toFixed(1)); dot.style.display = "";
+    if (vline) { vline.setAttribute("x1", cx.toFixed(1)); vline.setAttribute("x2", cx.toFixed(1)); }
     tip.innerHTML = anChartTipHtml(d);
     tip.classList.remove("hidden");
     const wrap = chartSvg.closest(".an-chart-wrap");
@@ -2877,7 +2926,19 @@ if (chartSvg) {
     tip.style.left = Math.max(56, Math.min(wr.width - 56, (cx / W) * wr.width)) + "px";
     tip.style.top = Math.max(0, (cy / H) * wr.height - 56) + "px";
   };
-  const leave = () => { if (tip) tip.classList.add("hidden"); if (dot) dot.style.display = "none"; };
+  const leave = () => {
+    if (isSample && data[3]) {
+      // Back to the pinned Feb 17 state, exactly as the reference shows it.
+      const cx = padL + (3 * (W - padL - padR)) / (data.length - 1);
+      const cy = padT + (1 - valOf(data[3]) / yMax) * (H - padT - padB);
+      dot.setAttribute("cx", cx.toFixed(1)); dot.setAttribute("cy", cy.toFixed(1)); dot.style.display = "";
+      if (vline) { vline.setAttribute("x1", cx.toFixed(1)); vline.setAttribute("x2", cx.toFixed(1)); }
+      if (tip) { tip.innerHTML = anChartTipHtml(data[3]); tip.classList.remove("hidden"); tip.style.left = ""; tip.style.top = ""; }
+    } else {
+      if (tip) tip.classList.add("hidden");
+      if (dot) dot.style.display = "none";
+    }
+  };
   if (hit) { hit.addEventListener("mousemove", move); hit.addEventListener("mouseleave", leave); }
   chartSvg.addEventListener("mouseleave", leave);
 }
