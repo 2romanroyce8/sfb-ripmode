@@ -1327,3 +1327,64 @@ Two pieces the v21 restyle left out:
   Deployed with the fixed deploy.py only; all 7 bindings verified before
   and after; served app.js/style.css byte-identical to local; live KV
   untouched (46 leads, 0 callLogs).
+
+## v23 — Dashboard overview + full-panel iPad Call Log + nav fix + calendar contrast fix + full-screen login (2026-11-22)
+One deploy, five fixes Rome reported from live screenshots:
+- **Dashboard overview tab** (first in WORKSPACE, default landing tab):
+  the reference screenshot's screen rebuilt with real data only — 3 stat
+  cards (Leads 46, Connect rate, Meetings booked; deltas vs last week,
+  "—" when there is no prior-period data — Leads is always "—", leads
+  carry no creation dates), a "Dials over time" area chart (reuses the
+  v22 chart code + hover tooltip, follows the date filter, honest empty
+  state; NOT "Revenue over time" — no dollar figure anywhere, BillMe is
+  test mode $0), and two bottom panels: Leads Management (Status /
+  Sources / Qualification tabs — 5 real pipeline stages, Naples 44 vs
+  Jax/Performance 2, all 46 FL residential roofers in ICP) and Team (the
+  real leaderboard, zero-activity reps show zeros). No CLV card and no
+  Retention panel — SFB has neither metric. Read-only overview: cards
+  link to Leads / Pipeline / Analytics / RIP MODE / Calendar. The
+  reference's fake numbers (129 leads, 24%, $30,240, $28,917, 95%) appear
+  nowhere in any served file.
+- **Call Log iPad fills the whole panel** (was a 1060px centered frame
+  with dead black space): on the Call Log tab the shell gets
+  `.tab-calllog` and the iPad stretches full width + full height of the
+  content area, slim bezel + camera dot + status bar + home indicator
+  kept. The list inside is exact iPadOS Messages now: borderless rows on
+  hairlines, the open conversation highlighted (`.sel`), the list scrolls
+  inside the frame. Sidebar gets a small "What's new?" card (real
+  changes only: v23, v22, v21, /salesteam) — no Help Center /
+  Documentation / Customizer links, those pages do not exist.
+- **Sidebar nav fix**: RIP MODE + Leads were scrolling out of view — the
+  staff shell made `.nav` itself scrollable with a near-invisible thin
+  scrollbar while the WORKSPACE label stayed put. The whole sidebar
+  scrolls now; `.nav` shows all 13 items. `onNavigate` also resets the
+  nav scroll and clears any typed sidebar-search filter (the v22 filter
+  used to stay applied after clicking a tab).
+- **Calendar selected-day contrast fix**: the selected day was a white
+  cell with a white number (whited out). It now stays dark (#2e2e2e) with
+  a white outline and a solid-white number in dark mode; light mode uses
+  dark text on the light selected cell — high contrast either way. The
+  dead v21 rule (`.calday.sel` — the render uses `calday--sel`) was
+  fixed, and every day-cell state (default/hover/selected/selected-hover/
+  today/disabled) plus time-slot and event-type buttons (selected
+  included) was audited for contrast in both modes. Root cause notes: a
+  light-mode hover rule used to beat the selected rule, and the template's
+  `body.sfb-hq button{color:inherit}` beats the plain `.calday` color
+  rule, so buttons inherit the shell text color — the harness resolver
+  follows `inherit` up the chain.
+- **Login is full-screen**: the template's `body.sfb-hq .login-page`
+  painted the login panel WHITE (480px, padded) — the "floating card"
+  Rome saw. ID-scoped rules now beat it: the login spans 100vw x
+  100dvh, dark #080808, edge to edge; only the form column stays 480px
+  wide, centered. Same in light mode (the panel stays dark; the light
+  card background is forced transparent). No behavior or wording changed:
+  username + 4-digit passcode, first sign-in sets the passcode, every
+  failure shows "Wrong username or password".
+- Harness ~/workspace/v23-harness.mjs: 155/155 (static + CSS cascade
+  resolver with WCAG contrast per state/mode + login size per mode +
+  vm functional tests of the whole app.js on a stub DOM — Dashboard
+  render + real deltas, Call Log sel row, nav reset, card clicks, all
+  six doLogin paths — + built-bundle fetch checks + live checks).
+  Deployed with the fixed deploy.py only; all 7 bindings verified before
+  and after; served app.js/style.css byte-identical to local; live KV
+  untouched (46 leads, 0 callLogs, dials 4 / connected 1).

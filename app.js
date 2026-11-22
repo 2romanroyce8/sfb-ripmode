@@ -37,7 +37,7 @@ function clearToken() { localStorage.removeItem(TOKEN_KEY); sessionStorage.remov
 let token = readToken();
 let me = "";
 let state = null;         // shared state from KV: leads, callLogs, conversations, meetings, stats
-let currentTab = "rip";
+let currentTab = "dashboard"; // default landing tab (2026-11-21, v23): the overview
 let ripIndex = 0;
 let calEvent = null, calTime = null;
 let calLeadId = null;   // Calendar "Book for lead" picker: selected lead id (null = none picked yet; booking falls back to the first lead, as the old <select> did)
@@ -888,6 +888,7 @@ function attachCallMic(call) {
 
 /* ---------- shell: template nav / topbar / account menu ---------- */
 const TAB_META = {
+  dashboard: ["Dashboard", "Your team at a glance — real numbers, nothing invented."],
   rip: ["RIP MODE", ""], // no subtitle under the dialer heading (removed 2026-11-20 at Rome's request; GV number still shown on CALL/TEXT + in the thread note)
   leads: ["Leads", "New leads start in the Pipeline at \"New\"."],
   pipeline: ["Client Pipeline", "5 stages. Move a card with the arrows or the stage picker."],
@@ -909,7 +910,7 @@ function updateNav() {
     if (on && !dot) { dot = document.createElement("span"); dot.className = "nav-active-dot"; b.appendChild(dot); }
     if (!on && dot) dot.remove();
   });
-  const meta = TAB_META[currentTab] || TAB_META.rip;
+  const meta = TAB_META[currentTab] || TAB_META.dashboard;
   const crumb = $("#crumb-title");
   if (crumb) crumb.textContent = meta[0];
 }
@@ -917,9 +918,18 @@ function onNavigate(next) {
   currentTab = next;
   setMenuOpen(false);
   window.scrollTo(0, 0);
+  // Nav reset (2026-11-21, v23): a typed sidebar-search filter or a
+  // scrolled sidebar nav must never hide tabs after a navigation — the
+  // v22 filter stayed applied when a tab was clicked, and the nav's own
+  // scroll hid RIP MODE + Leads while the WORKSPACE label stayed put.
+  // Reset both here, on every navigation.
+  const navEl = document.querySelector(".nav");
+  if (navEl) navEl.scrollTop = 0;
+  if (sidebarSearch && sidebarSearch.value) { sidebarSearch.value = ""; filterSidebarNav(""); sbHideResults(); }
   updateNav();
   if (next === "airep") loadAiRep(); // loads status + calls + config, then re-renders
   if (next === "analytics") loadAnalytics(); // reloads state + receptionist calls, then re-renders
+  if (next === "dashboard") { loadState().then(() => { if (currentTab === "dashboard") render(); }).catch(() => {}); }
   if (next === "email") loadEmailStatus(); // loads Resend connection state + fresh state, then re-renders
   if (next === "assignments" || next === "announcements" || next === "today") { loadState().then(() => { if (currentTab === next) render(); }).catch(() => {}); }
   render();
@@ -1103,12 +1113,13 @@ $("#staff-settings-btn").addEventListener("click", () => {
 function render() {
   if (!state) return;
   const main = $("#main");
-  const meta = TAB_META[currentTab] || TAB_META.rip;
+  const meta = TAB_META[currentTab] || TAB_META.dashboard;
   const sub = currentTab === "leads"
     ? `${(state.leads || []).length} leads. New leads start in the Pipeline at "New".`
     : meta[1];
   let body = "";
-  if (currentTab === "rip") body = renderRip();
+  if (currentTab === "dashboard") body = renderDashboard();
+  else if (currentTab === "rip") body = renderRip();
   else if (currentTab === "leads") body = renderLeads();
   else if (currentTab === "pipeline") body = renderPipeline();
   else if (currentTab === "calendar") body = renderCalendar();
@@ -1121,6 +1132,10 @@ function render() {
   else if (currentTab === "today") body = renderToday();
   else if (currentTab === "connections") body = renderConnections();
   main.innerHTML = `<div class="page-heading"><div><span class="eyebrow">YOUR WORKSPACE</span><h1>${esc(meta[0])}</h1>${sub ? `<p>${esc(sub)}</p>` : ""}</div></div>` + body;
+  // Full-panel Call Log (2026-11-21, v23): the iPad fills the whole panel —
+  // the shell class drives the height/width rules in ripmode.css.
+  const shell = $("#shell");
+  if (shell) shell.classList.toggle("tab-calllog", currentTab === "calllog");
   bindTab();
 }
 
@@ -1845,7 +1860,7 @@ function renderCallLog() {
   const isTeam = !activeConv || activeConv === "__team__";
   const list = `
       <div class="ipad-list-body"><div class="conv-list">
-      <button class="conv-item team-pin" data-openconv="__team__">
+      <button class="conv-item team-pin${isTeam ? " sel" : ""}" data-openconv="__team__">
         <span class="im-avatar">SFB</span>
         <span class="im-conv-main"><span class="pin-label">Pinned</span><b>SFB SALES TEAM</b><span class="im-preview">Group chat — Roman, Logan, Braylen</span></span>
         <span class="im-conv-right"></span></button>
@@ -1858,7 +1873,7 @@ function renderCallLog() {
         const hay = [l.business, l.phone,
           ...callsFor(l.id).map((c) => callLabel(c.outcome) + " " + (isMissedCall(c) ? "missed call" : "outgoing call")),
           ...((convFor(l.id) || {messages: []}).messages || []).map((m) => m.text)].join(" ").toLowerCase();
-        return `<button class="conv-item" data-openconv="${l.id}" data-search="${esc(hay)}">
+        return `<button class="conv-item${activeConv === l.id ? " sel" : ""}" data-openconv="${l.id}" data-search="${esc(hay)}">
           <span class="im-avatar">${esc(initialsFor(l.business))}</span>
           <span class="im-conv-main"><b>${esc(l.business)}</b><span class="im-preview${missed ? " missed" : ""}">${esc(preview)}</span></span>
           <span class="im-conv-right">${at ? `<span class="im-time">${esc(at)}</span>` : ""}${(l.stage || "New") === "New" ? `<span class="im-unread" title="New lead"></span>` : ""}</span></button>`;
@@ -2407,6 +2422,124 @@ function capsCardHtml() {
   </div>`;
 }
 
+/* ---------- Dashboard overview (2026-11-21, v23) ----------
+   The reference screenshot's screen, rebuilt with SFB's REAL data only:
+   3 stat cards (Leads / Connect rate / Meetings booked) with vs-last-week
+   delta pills, a Dials-over-time area chart (reuses the v22 chart code),
+   a Leads Management panel (Status / Sources / Qualification) and a Team
+   panel (leaderboard). Read-only: every card and panel links to its real
+   tab. No revenue, no CLV, no retention — SFB has none of those yet, so
+   they are not shown. No fake numbers anywhere. */
+let dbRange = "7d"; // chart range, same options as Analytics
+let dbLeadsTab = "status"; // "status" | "sources" | "qual"
+
+/* Pure: this-week vs prior-week deltas from callLogs (server-dated
+   "Nov 20, 2026" strings). Returns {dials, ratePts, meetings} where each
+   is a number or null when there is nothing to compare (both weeks empty,
+   or a rate with no dials in either week). Leads have no creation dates
+   in the data, so the Leads card always shows "—". */
+function dbWeekDeltas(st, nowMs) {
+  const now = new Date(nowMs || Date.now());
+  const todayStart = startOfDay(now);
+  const tomorrowStart = new Date(todayStart.getTime() + 24 * 60 * 60 * 1000);
+  const thisStart = new Date(todayStart.getTime() - 6 * 24 * 60 * 60 * 1000);
+  const priorStart = new Date(todayStart.getTime() - 13 * 24 * 60 * 60 * 1000);
+  const calls = (st.callLogs || []).map((c) => ({...c, at: parseStoredDate(c.date, c.time)})).filter((c) => c.at);
+  const isConn = (c) => CONNECTED_OUTCOMES.includes(c.outcome);
+  const thisW = calls.filter((c) => c.at >= thisStart && c.at < tomorrowStart);
+  const priorW = calls.filter((c) => c.at >= priorStart && c.at < thisStart);
+  const diff = (a, b) => (a === 0 && b === 0 ? null : a - b);
+  const rate = (cs) => cs.length ? cs.filter(isConn).length / cs.length : null;
+  const rThis = rate(thisW), rPrior = rate(priorW);
+  const ratePts = (rThis === null || rPrior === null) ? null : Math.round((rThis - rPrior) * 1000) / 10;
+  const mThis = thisW.filter((c) => c.outcome === "meeting_booked").length;
+  const mPrior = priorW.filter((c) => c.outcome === "meeting_booked").length;
+  return {dials: diff(thisW.length, priorW.length), ratePts, meetings: diff(mThis, mPrior)};
+}
+/* Delta pill: green when up, red when down, neutral "—" when there is
+   nothing to compare. The value is an absolute change (dials, meetings)
+   or percentage points (connect rate, suffix " pts"). */
+function dbDeltaPill(v, suffix) {
+  if (v === null || v === undefined) return `<span class="db-delta none">—</span>`;
+  const cls = v === 0 ? "none" : (v > 0 ? "up" : "down");
+  const sign = v > 0 ? "+" : "";
+  return `<span class="db-delta ${cls}">${sign}${v}${suffix || ""}</span>`;
+}
+function renderDashboard() {
+  const leads = state.leads || [];
+  const aAll = computeAnalytics(state, [], "all", undefined, null);
+  const aChart = computeAnalytics(state, [], dbRange, undefined, null);
+  _anChartData = aChart.perDay || [];
+  const deltas = dbWeekDeltas(state);
+  const connectRate = aAll.connectRate; // null when 0 dials
+  const rangeBtns = ANALYTICS_RANGES.map(([v, label]) => `<button class="btn ${dbRange === v ? "btn--primary" : ""}" data-dbrange="${v}" aria-pressed="${dbRange === v}">${label}</button>`).join("");
+  // Leads Management — Status: the 5 real pipeline stages with counts.
+  const stageCounts = STAGES.map((s) => ({stage: s, n: leads.filter((l) => (l.stage || "New") === s).length}));
+  // Sources: by lead list on file — Naples 239 vs Jax / Performance.
+  // The data has no source field; the lists are told apart by id prefix.
+  const srcCounts = [
+    {label: "Naples 239", n: leads.filter((l) => (l.id || "").indexOf("lead-naples-") === 0).length},
+    {label: "Jax / Performance", n: leads.filter((l) => (l.id || "").indexOf("lead-naples-") !== 0).length},
+  ];
+  // Qualification: ICP = Florida residential roofers (the whole list is
+  // niche Roofing in Naples / Jacksonville / Oviedo). No lead carries a
+  // verification flag in the dialer data, so none is invented here.
+  const inIcp = leads.filter((l) => (l.niche || "") === "Roofing").length;
+  const maxLeads = Math.max(leads.length, 1);
+  const lmBody = dbLeadsTab === "status"
+    ? stageCounts.map((s) => anBarRow(s.stage, s.n, maxLeads, "")).join("") + `<p class="notice">Stages move in the Pipeline — a booking moves a lead from New to In conversation.</p>`
+    : dbLeadsTab === "sources"
+    ? srcCounts.map((s) => anBarRow(s.label, s.n, maxLeads, "")).join("") + `<p class="notice">By lead list on file. The Tampa + Miami lists are not loaded yet.</p>`
+    : anBarRow("In ICP — FL residential roofer", inIcp, maxLeads, "") + anBarRow("Outside ICP", leads.length - inIcp, maxLeads, "") + `<p class="notice">ICP = Florida residential roofers, $1–5M/yr, owner-operator. Verification flags (verify / do-not-pitch) live in the research notes, not in dialer data yet.</p>`;
+  const maxLbMeetings = Math.max(0, ...aChart.leaderboard.map((r) => r.meetings));
+  const teamRows = aChart.leaderboard.map((r, i) => `<div class="lb-row"><span class="lb-rank">#${i + 1}</span><span class="lb-name"><b>${esc(r.name)}</b></span><span class="lb-nums">${r.meetings} meetings · ${r.connected} connected · ${r.dials} dials</span><span class="lb-bar"><span style="width:${maxLbMeetings ? Math.round((r.meetings / maxLbMeetings) * 100) : 0}%"></span></span></div>`).join("");
+  return `
+  <div class="db-stats">
+    <button type="button" class="db-stat" data-dbgo="leads">
+      <span class="db-stat-label">Leads</span>
+      <span class="db-stat-num">${leads.length}</span>
+      <span class="db-stat-sub">${dbDeltaPill(null)} <span>vs last week</span></span>
+    </button>
+    <button type="button" class="db-stat" data-dbgo="analytics">
+      <span class="db-stat-label">Connect rate</span>
+      <span class="db-stat-num">${connectRate === null ? "—" : connectRate + "%"}</span>
+      <span class="db-stat-sub">${dbDeltaPill(deltas.ratePts, " pts")} <span>vs last week</span></span>
+    </button>
+    <button type="button" class="db-stat" data-dbgo="calendar">
+      <span class="db-stat-label">Meetings booked</span>
+      <span class="db-stat-num">${aAll.meetings}</span>
+      <span class="db-stat-sub">${dbDeltaPill(deltas.meetings)} <span>vs last week</span></span>
+    </button>
+  </div>
+  <div class="card db-chart-card">
+    <div class="db-card-head"><div class="section-title" style="margin-top:0">Dials over time — ${esc(aChart.rangeLabel)}</div><div class="an-range">${rangeBtns}</div></div>
+    ${anAreaChartHtml(aChart)}
+    <p class="notice">Dials and meetings from real calls only. No revenue is shown — BillMe is in test mode ($0 real money).</p>
+  </div>
+  <div class="db-panels">
+    <div class="card db-panel">
+      <div class="db-card-head"><div class="section-title" style="margin-top:0">Leads Management</div><button class="btn" data-dbgo="pipeline">View Pipeline</button></div>
+      <div class="seg-toggle" role="group" aria-label="Leads management view">
+        <button type="button" data-dbleads="status" aria-pressed="${dbLeadsTab === "status"}">Status</button>
+        <button type="button" data-dbleads="sources" aria-pressed="${dbLeadsTab === "sources"}">Sources</button>
+        <button type="button" data-dbleads="qual" aria-pressed="${dbLeadsTab === "qual"}">Qualification</button>
+      </div>
+      <div style="margin-top:14px">${lmBody}</div>
+    </div>
+    <div class="card db-panel">
+      <div class="db-card-head"><div class="section-title" style="margin-top:0">Team — ${esc(aChart.rangeLabel)}</div><button class="btn" data-dbgo="analytics">View Analytics</button></div>
+      ${teamRows}
+      <p class="notice">Ranked by meetings booked, then connected, then dials. Always the full team.</p>
+    </div>
+  </div>`;
+}
+function bindDashboard() {
+  document.querySelectorAll("[data-dbgo]").forEach((b) => b.onclick = () => onNavigate(b.dataset.dbgo));
+  document.querySelectorAll("[data-dbrange]").forEach((b) => b.onclick = () => { dbRange = b.dataset.dbrange; render(); });
+  document.querySelectorAll("[data-dbleads]").forEach((b) => b.onclick = () => { dbLeadsTab = b.dataset.dbleads; render(); });
+  bindAreaChart();
+}
+
 function renderAnalytics() {
   if (!analyticsLoaded) {
     return `<div class="card"><div class="notice">Loading analytics…</div><button class="btn" id="an-refresh">Refresh</button></div>`;
@@ -2489,6 +2622,49 @@ function renderAnalytics() {
   </table></div></div>`;
 }
 
+/* Area-chart hover (v22, extracted 2026-11-21 v23 so the Dashboard
+   overview can reuse it): nearest day by mouse x, tooltip shows the
+   real values for that day. Positions are computed in viewBox units
+   so the tooltip stays aligned at any rendered width. Wires the
+   [data-an-chart] SVG already rendered on the page, using
+   _anChartData (set by the render function). */
+function bindAreaChart() {
+// Area chart hover (v22): nearest day by mouse x, tooltip shows the
+// real values for that day. Positions are computed in viewBox units so
+// the tooltip stays aligned at any rendered width.
+const chartSvg = document.querySelector("[data-an-chart]");
+if (chartSvg) {
+  const tip = $("#an-chart-tip");
+  const dot = $("#an-chart-dot");
+  const hit = chartSvg.querySelector("[data-an-chart-hit]");
+  const data = _anChartData || [];
+  const W = 660, H = 230, padL = 34, padR = 14, padT = 14, padB = 26;
+  const move = (e) => {
+    if (!data.length || !tip || !dot) return;
+    const rect = chartSvg.getBoundingClientRect();
+    const frac = Math.max(0, Math.min(1, (e.clientX - rect.left) / Math.max(1, rect.width)));
+    const px = frac * W;
+    const plotW = W - padL - padR;
+    let i = data.length === 1 ? 0 : Math.round((px - padL) / (plotW / (data.length - 1)));
+    i = Math.max(0, Math.min(data.length - 1, i));
+    const d = data[i];
+    const cx = data.length === 1 ? W / 2 : padL + (i * plotW) / (data.length - 1);
+    const max = Math.max(1, ...data.map((x) => x.dials));
+    const cy = padT + (1 - d.dials / max) * (H - padT - padB);
+    dot.setAttribute("cx", cx.toFixed(1)); dot.setAttribute("cy", cy.toFixed(1)); dot.style.display = "";
+    tip.innerHTML = anChartTipHtml(d);
+    tip.classList.remove("hidden");
+    const wrap = chartSvg.closest(".an-chart-wrap");
+    const wr = wrap ? wrap.getBoundingClientRect() : rect;
+    tip.style.left = Math.max(56, Math.min(wr.width - 56, (cx / W) * wr.width)) + "px";
+    tip.style.top = Math.max(0, (cy / H) * wr.height - 56) + "px";
+  };
+  const leave = () => { if (tip) tip.classList.add("hidden"); if (dot) dot.style.display = "none"; };
+  if (hit) { hit.addEventListener("mousemove", move); hit.addEventListener("mouseleave", leave); }
+  chartSvg.addEventListener("mouseleave", leave);
+}
+}
+
 function bindAnalytics() {
   document.querySelectorAll("[data-anrange]").forEach((b) => b.onclick = () => { analyticsRange = b.dataset.anrange; render(); });
   document.querySelectorAll("[data-anscope]").forEach((b) => b.onclick = () => { analyticsScope = b.dataset.anscope; render(); });
@@ -2498,40 +2674,7 @@ function bindAnalytics() {
   if (refresh) refresh.onclick = () => { analyticsLoaded = false; loadAnalytics(); };
   const go = $("#an-goto-airep");
   if (go) go.onclick = () => onNavigate("airep");
-  // Area chart hover (v22): nearest day by mouse x, tooltip shows the
-  // real values for that day. Positions are computed in viewBox units so
-  // the tooltip stays aligned at any rendered width.
-  const chartSvg = document.querySelector("[data-an-chart]");
-  if (chartSvg) {
-    const tip = $("#an-chart-tip");
-    const dot = $("#an-chart-dot");
-    const hit = chartSvg.querySelector("[data-an-chart-hit]");
-    const data = _anChartData || [];
-    const W = 660, H = 230, padL = 34, padR = 14, padT = 14, padB = 26;
-    const move = (e) => {
-      if (!data.length || !tip || !dot) return;
-      const rect = chartSvg.getBoundingClientRect();
-      const frac = Math.max(0, Math.min(1, (e.clientX - rect.left) / Math.max(1, rect.width)));
-      const px = frac * W;
-      const plotW = W - padL - padR;
-      let i = data.length === 1 ? 0 : Math.round((px - padL) / (plotW / (data.length - 1)));
-      i = Math.max(0, Math.min(data.length - 1, i));
-      const d = data[i];
-      const cx = data.length === 1 ? W / 2 : padL + (i * plotW) / (data.length - 1);
-      const max = Math.max(1, ...data.map((x) => x.dials));
-      const cy = padT + (1 - d.dials / max) * (H - padT - padB);
-      dot.setAttribute("cx", cx.toFixed(1)); dot.setAttribute("cy", cy.toFixed(1)); dot.style.display = "";
-      tip.innerHTML = anChartTipHtml(d);
-      tip.classList.remove("hidden");
-      const wrap = chartSvg.closest(".an-chart-wrap");
-      const wr = wrap ? wrap.getBoundingClientRect() : rect;
-      tip.style.left = Math.max(56, Math.min(wr.width - 56, (cx / W) * wr.width)) + "px";
-      tip.style.top = Math.max(0, (cy / H) * wr.height - 56) + "px";
-    };
-    const leave = () => { if (tip) tip.classList.add("hidden"); if (dot) dot.style.display = "none"; };
-    if (hit) { hit.addEventListener("mousemove", move); hit.addEventListener("mouseleave", leave); }
-    chartSvg.addEventListener("mouseleave", leave);
-  }
+  bindAreaChart();
   // Owner-only caps save (2026-11-21): team caps + each person's caps.
   // The worker validates every number and 403s staff — a failed save
   // shows the real error and never wipes what was typed.
@@ -2953,7 +3096,8 @@ function renderConnections() {
 
 /* ---------- bind + init ---------- */
 function bindTab() {
-  if (currentTab === "rip") bindRip();
+  if (currentTab === "dashboard") bindDashboard();
+  else if (currentTab === "rip") bindRip();
   else if (currentTab === "leads") bindLeads();
   else if (currentTab === "pipeline") bindPipeline();
   else if (currentTab === "calendar") bindCalendar();
