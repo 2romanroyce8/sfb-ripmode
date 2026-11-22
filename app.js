@@ -938,6 +938,37 @@ document.querySelectorAll(".nav-link").forEach((b) => {
   b.addEventListener("click", () => onNavigate(b.dataset.tab));
 });
 
+/* Sidebar search (2026-11-21, reference UI): filters the 12 nav items by
+   label; a section label hides when none of its links match. Cmd/Ctrl+K
+   focuses the box; Escape clears it. */
+function filterSidebarNav(q) {
+  const query = (q || "").trim().toLowerCase();
+  const nav = document.querySelector(".nav");
+  if (!nav) return;
+  // Walk the nav's children in order; a label owns the links after it.
+  let label = document.getElementById("team-nav-label"); // WORKSPACE, above the nav
+  let labelHasVisible = false;
+  const flushLabel = () => { if (label) label.hidden = !labelHasVisible; };
+  Array.from(nav.children).forEach((el) => {
+    if (el.classList.contains("nav-label")) { flushLabel(); label = el; labelHasVisible = false; return; }
+    if (!el.classList.contains("nav-link")) return;
+    const match = !query || (el.textContent || "").toLowerCase().includes(query);
+    el.hidden = !match;
+    if (match) labelHasVisible = true;
+  });
+  flushLabel();
+}
+const sidebarSearch = document.getElementById("sidebar-search");
+if (sidebarSearch) {
+  sidebarSearch.addEventListener("input", () => filterSidebarNav(sidebarSearch.value));
+  sidebarSearch.addEventListener("keydown", (e) => {
+    if (e.key === "Escape") { sidebarSearch.value = ""; filterSidebarNav(""); sidebarSearch.blur(); }
+  });
+  document.addEventListener("keydown", (e) => {
+    if ((e.metaKey || e.ctrlKey) && e.key.toLowerCase() === "k") { e.preventDefault(); sidebarSearch.focus(); sidebarSearch.select(); }
+  });
+}
+
 /* Appearance toggle — exactly as the template: data-appearance on .shell,
    persisted under the template's localStorage key. */
 function applyAppearance(a) {

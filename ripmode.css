@@ -410,3 +410,159 @@ html:has(.shell[data-appearance="light"]) .iphone-head-name b{color:#fff}
 .staff-settings-row:last-child{border-bottom:0}
 .account-workspace-label{padding:10px 12px;border-bottom:1px solid var(--line)}
 .account-workspace-label .account-workspace-name{display:block;font-weight:700;margin-top:6px}
+
+/* ---------- Reference UI theme (2026-11-21) — dark mode only ----------
+   Design language from the reference dashboard Rome sent: near-black page,
+   slightly lighter cards with hairline borders, compact sidebar with a
+   search box and section labels, 12px card radius, bright-green accent.
+   PRESENTATION ONLY — no data, copy, or behaviour is touched here, and
+   every rule below is scoped to .shell[data-appearance="dark"], so the
+   light-mode toggle keeps working exactly as before. The iPhone dialer
+   and iPad call-log frames are left untouched. */
+
+/* Unscoped: the sidebar-search filter hides nav items with the hidden
+   attribute — this must win over the template's display:flex on .nav-link
+   in BOTH modes, so it lives outside the dark scoping below. */
+.nav .nav-link[hidden],.nav-label[hidden]{display:none}
+
+/* Tokens — reference palette */
+body.sfb-hq .shell[data-appearance="dark"]{
+  --bg:#0a0a0c; --panel:#141416; --panel-2:#1b1b1d; --panel-3:#232326;
+  --inset:#0d0d0f; --line:#232326; --line-soft:#1e1e21;
+  --text:#fafafa; --text-2:#e4e4e7; --muted:#9c9ca3; --faint:#6e6e76;
+  --green:#34d399; --red:#ff453a;
+}
+/* Layout widths — desktop only, so the <=900px mobile collapse keeps winning */
+@media(min-width:901px){
+  body.sfb-hq .shell[data-appearance="dark"]{grid-template-columns:236px minmax(0,1fr)}
+  body.sfb-hq .shell[data-appearance="dark"] .content{padding:24px 28px 40px;gap:20px}
+  body.sfb-hq .shell[data-appearance="dark"] .topbar{padding:0 24px}
+}
+
+/* ---------- Sidebar ---------- */
+body.sfb-hq .shell[data-appearance="dark"] .sidebar{background:#0e0e10;border-right:1px solid #1e1e21}
+body.sfb-hq .shell[data-appearance="dark"] .brand b{color:#fafafa}
+body.sfb-hq .shell[data-appearance="dark"] .brand span{color:#9c9ca3}
+body.sfb-hq .shell[data-appearance="dark"] .workspace-badge{background:#141416;border:1px solid #232326;border-radius:12px}
+body.sfb-hq .shell[data-appearance="dark"] .workspace-badge b{color:#fafafa}
+body.sfb-hq .shell[data-appearance="dark"] .workspace-badge small{color:#9c9ca3}
+/* Sidebar search (index.html .sidebar-search, wired in app.js) */
+body.sfb-hq .shell[data-appearance="dark"] .sidebar-search{display:flex;align-items:center;gap:8px;background:#0d0d0f;border:1px solid #232326;border-radius:9px;padding:0 10px;height:36px;margin:12px 12px 2px}
+body.sfb-hq .shell[data-appearance="dark"] .sidebar-search svg{flex:none;color:#6e6e76}
+body.sfb-hq .shell[data-appearance="dark"] .sidebar-search input{flex:1;min-width:0;background:none;border:0;outline:0;color:#fafafa;font-size:13px;height:100%;padding:0}
+body.sfb-hq .shell[data-appearance="dark"] .sidebar-search input::placeholder{color:#6e6e76}
+body.sfb-hq .shell[data-appearance="dark"] .sidebar-search kbd{flex:none;font:600 11px/1 inherit;color:#9c9ca3;background:#1e1e21;border:1px solid #26262a;border-radius:5px;padding:3px 5px}
+body.sfb-hq .shell[data-appearance="dark"] .sidebar-search:focus-within{border-color:#3f3f46}
+/* Nav sections + items */
+body.sfb-hq .shell[data-appearance="dark"] .nav{gap:2px;padding:0 12px}
+body.sfb-hq .shell[data-appearance="dark"] .nav-label{font-size:11px;letter-spacing:.09em;color:#6e6e76;font-weight:650;padding:18px 10px 6px;margin:0}
+body.sfb-hq .shell[data-appearance="dark"] .nav .nav-link{display:flex;align-items:center;gap:10px;min-height:36px;padding:0 10px;border-radius:8px;color:#a1a1aa;font-size:13.5px;font-weight:500;background:none;border:0;width:100%;text-align:left;cursor:pointer}
+body.sfb-hq .shell[data-appearance="dark"] .nav .nav-link svg{flex:none}
+body.sfb-hq .shell[data-appearance="dark"] .nav .nav-link:hover{background:#1a1a1d;color:#fafafa}
+body.sfb-hq .shell[data-appearance="dark"] .nav .nav-link[aria-current="page"]{background:#1e1e21;color:#fff;font-weight:650}
+body.sfb-hq .shell[data-appearance="dark"] .nav .nav-link .nav-active-dot{width:5px;height:5px;border-radius:50%;background:#e4e4e7;margin-left:auto}
+body.sfb-hq .shell[data-appearance="dark"] .nav .nav-link[hidden]{display:none}
+body.sfb-hq .shell[data-appearance="dark"] .nav-label[hidden]{display:none}
+/* Sidebar foot */
+body.sfb-hq .shell[data-appearance="dark"] .scope-card{background:#141416;border:1px solid #232326;border-radius:12px}
+body.sfb-hq .shell[data-appearance="dark"] .scope-card b{color:#fafafa}
+body.sfb-hq .shell[data-appearance="dark"] .scope-card small{color:#9c9ca3}
+body.sfb-hq .shell[data-appearance="dark"] .sidebar-profile{border-top:1px solid #1e1e21}
+body.sfb-hq .shell[data-appearance="dark"] .sidebar-profile b{color:#fafafa}
+body.sfb-hq .shell[data-appearance="dark"] .sidebar-profile small{color:#9c9ca3}
+body.sfb-hq .shell[data-appearance="dark"] .avatar{background:#26262a;color:#fafafa}
+
+/* ---------- Topbar ---------- */
+body.sfb-hq .shell[data-appearance="dark"] .topbar{background:#0c0c0e;border-bottom:1px solid #1e1e21;min-height:56px}
+body.sfb-hq .shell[data-appearance="dark"] .breadcrumbs{color:#9c9ca3;font-size:13.5px}
+body.sfb-hq .shell[data-appearance="dark"] .breadcrumbs b{color:#fafafa;font-weight:650}
+body.sfb-hq .shell[data-appearance="dark"] .icon-button{width:36px;height:36px;border-radius:8px;color:#a1a1aa}
+body.sfb-hq .shell[data-appearance="dark"] .icon-button:hover{background:#1e1e21;color:#fafafa}
+body.sfb-hq .shell[data-appearance="dark"] .role-chip{background:#1e1e21;border:1px solid #26262a;color:#e4e4e7;border-radius:999px;font-size:12px;padding:5px 11px}
+body.sfb-hq .shell[data-appearance="dark"] .account-popover{background:#141416;border:1px solid #232326;border-radius:12px;box-shadow:0 12px 32px rgba(0,0,0,.5)}
+body.sfb-hq .shell[data-appearance="dark"] .account-workspaces button:hover,body.sfb-hq .shell[data-appearance="dark"] .account-links button:hover{background:#1e1e21}
+
+/* ---------- Page heading ---------- */
+body.sfb-hq .shell[data-appearance="dark"] .page-heading h1{font-size:22px;font-weight:650;letter-spacing:-.02em;color:#fafafa}
+body.sfb-hq .shell[data-appearance="dark"] .eyebrow{font-size:11px;letter-spacing:.1em;color:#6e6e76;font-weight:650}
+body.sfb-hq .shell[data-appearance="dark"] .page-heading p{color:#9c9ca3;font-size:14px}
+
+/* ---------- Cards ---------- */
+body.sfb-hq .shell[data-appearance="dark"] .card{background:var(--panel);border:1px solid #232326;border-radius:12px;padding:20px}
+body.sfb-hq .shell[data-appearance="dark"] .card h2{font-size:15px;font-weight:650;color:#fafafa}
+body.sfb-hq .shell[data-appearance="dark"] .section-title{font-size:13px;font-weight:650;color:#fafafa;margin:18px 0 10px}
+body.sfb-hq .shell[data-appearance="dark"] .section-title:first-child{margin-top:0}
+
+/* ---------- Stat cards (Analytics + RIP MODE session data) ----------
+   Reference layout: small muted label on top, big number below. */
+body.sfb-hq .shell[data-appearance="dark"] .stat-boxes{gap:12px}
+body.sfb-hq .shell[data-appearance="dark"] .stat-box{display:flex;flex-direction:column;background:#0d0d0f;border:1px solid #1e1e21;border-radius:12px;padding:14px 16px}
+body.sfb-hq .shell[data-appearance="dark"] .stat-box .lbl{order:-1;font-size:12px;color:#9c9ca3;font-weight:600}
+body.sfb-hq .shell[data-appearance="dark"] .stat-box .num{font-size:26px;font-weight:750;letter-spacing:-.02em;color:#fafafa;margin-top:6px}
+body.sfb-hq .shell[data-appearance="dark"] .stat-strip{gap:10px}
+body.sfb-hq .shell[data-appearance="dark"] .stat-cell{display:flex;flex-direction:column;background:#0d0d0f;border:1px solid #1e1e21;border-radius:10px;padding:10px 12px}
+body.sfb-hq .shell[data-appearance="dark"] .stat-cell .lbl{order:-1;font-size:11.5px;color:#9c9ca3;font-weight:600}
+body.sfb-hq .shell[data-appearance="dark"] .stat-cell .num{font-size:20px;font-weight:750;letter-spacing:-.02em;color:#fafafa;margin-top:4px}
+
+/* ---------- Caps strip ---------- */
+body.sfb-hq .shell[data-appearance="dark"] .caps-strip{border-color:#232326}
+body.sfb-hq .shell[data-appearance="dark"] .caps-mini-label{color:#9c9ca3}
+body.sfb-hq .shell[data-appearance="dark"] .caps-mini-bar{height:5px;background:#26262a}
+body.sfb-hq .shell[data-appearance="dark"] .caps-note{color:#6e6e76}
+
+/* ---------- Buttons / inputs ---------- */
+body.sfb-hq .shell[data-appearance="dark"] .btn{min-height:40px;border-radius:9px;background:#1c1c1e;border-color:#2a2a2e;color:#f4f4f5;font-weight:600}
+body.sfb-hq .shell[data-appearance="dark"] .btn:hover{border-color:#3a3a3f;background:#222225}
+body.sfb-hq .shell[data-appearance="dark"] .btn--primary{background:#26262a;border-color:#26262a;color:#fff}
+body.sfb-hq .shell[data-appearance="dark"] .btn--primary:hover{background:#2e2e33;border-color:#2e2e33}
+body.sfb-hq .shell[data-appearance="dark"] .input{background:#0d0d0f;border:1px solid #26262a;border-radius:9px;color:#fafafa;min-height:40px}
+body.sfb-hq .shell[data-appearance="dark"] .input::placeholder{color:#6e6e76}
+body.sfb-hq .shell[data-appearance="dark"] .input:focus{border-color:#3f3f46;outline:2px solid rgba(255,255,255,.08);outline-offset:0}
+body.sfb-hq .shell[data-appearance="dark"] .field label{color:#9c9ca3;font-size:12px;font-weight:600}
+
+/* ---------- Tables ---------- */
+body.sfb-hq .shell[data-appearance="dark"] table th{font-size:11px;letter-spacing:.06em;text-transform:uppercase;color:#6e6e76;font-weight:650;padding:10px 12px;border-bottom:1px solid #1e1e21;text-align:left}
+body.sfb-hq .shell[data-appearance="dark"] table td{padding:12px;border-bottom:1px solid #1e1e21;color:#e4e4e7;font-size:13.5px}
+body.sfb-hq .shell[data-appearance="dark"] table tr:last-child td{border-bottom:0}
+body.sfb-hq .shell[data-appearance="dark"] table tbody tr:hover td{background:#17171a}
+
+/* ---------- Badges / pills / segmented toggle ---------- */
+body.sfb-hq .shell[data-appearance="dark"] .badge{border-radius:999px;padding:3px 9px;font-size:11.5px;font-weight:650}
+body.sfb-hq .shell[data-appearance="dark"] .badge.green{background:rgba(52,211,153,.12);color:#34d399;border:1px solid rgba(52,211,153,.25)}
+body.sfb-hq .shell[data-appearance="dark"] .badge.red{background:rgba(255,69,58,.12);color:#ff8a80;border:1px solid rgba(255,69,58,.25)}
+body.sfb-hq .shell[data-appearance="dark"] .badge.gray{background:#1e1e21;color:#9c9ca3;border:1px solid #26262a}
+body.sfb-hq .shell[data-appearance="dark"] .pill{border-radius:999px;background:#1e1e21;border:1px solid #26262a;color:#e4e4e7}
+body.sfb-hq .shell[data-appearance="dark"] .seg-toggle{background:#0d0d0f;border:1px solid #232326;border-radius:10px;padding:3px}
+body.sfb-hq .shell[data-appearance="dark"] .seg-toggle button{border-radius:7px;color:#9c9ca3}
+body.sfb-hq .shell[data-appearance="dark"] .seg-toggle button.seg-on{background:#26262a;color:#fff}
+
+/* ---------- Analytics bars / leaderboard ---------- */
+body.sfb-hq .shell[data-appearance="dark"] .an-bar-track{height:8px;background:#1e1e21;border-radius:999px}
+body.sfb-hq .shell[data-appearance="dark"] .an-bar-fill{background:#34d399;border-radius:999px}
+body.sfb-hq .shell[data-appearance="dark"] .an-bar-label{color:#e4e4e7}
+body.sfb-hq .shell[data-appearance="dark"] .an-bar-val{color:#9c9ca3}
+body.sfb-hq .shell[data-appearance="dark"] .an-bar-sub{color:#6e6e76}
+body.sfb-hq .shell[data-appearance="dark"] .lb-row{border-bottom:1px solid #1e1e21}
+body.sfb-hq .shell[data-appearance="dark"] .lb-bar{background:#1e1e21}
+body.sfb-hq .shell[data-appearance="dark"] .lb-bar>span{background:#34d399}
+body.sfb-hq .shell[data-appearance="dark"] .lb-name{color:#fafafa}
+body.sfb-hq .shell[data-appearance="dark"] .lb-nums{color:#9c9ca3}
+
+/* ---------- Calendar ---------- */
+body.sfb-hq .shell[data-appearance="dark"] .calday{border:1px solid #232326;border-radius:10px}
+body.sfb-hq .shell[data-appearance="dark"] .calday.sel{border-color:#3f3f46;background:#1e1e21}
+body.sfb-hq .shell[data-appearance="dark"] .event-type{background:#0d0d0f;border:1px solid #232326;border-radius:12px}
+body.sfb-hq .shell[data-appearance="dark"] .slot{border:1px solid #26262a;background:#0d0d0f;border-radius:8px}
+body.sfb-hq .shell[data-appearance="dark"] .calbook-title{color:#fafafa}
+
+/* ---------- Notices / kv rows / chat list / picker / confirm ---------- */
+body.sfb-hq .shell[data-appearance="dark"] .notice{background:#0d0d0f;border:1px solid #1e1e21;border-radius:10px;color:#9c9ca3}
+body.sfb-hq .shell[data-appearance="dark"] .error{background:rgba(255,69,58,.08);border:1px solid rgba(255,69,58,.25);color:#ff8a80;border-radius:10px}
+body.sfb-hq .shell[data-appearance="dark"] .ok-note{background:rgba(52,211,153,.08);border:1px solid rgba(52,211,153,.25);color:#34d399;border-radius:10px}
+body.sfb-hq .shell[data-appearance="dark"] .kv{border-bottom:1px solid #1e1e21}
+body.sfb-hq .shell[data-appearance="dark"] .kv>span:first-child{color:#9c9ca3}
+body.sfb-hq .shell[data-appearance="dark"] .conv-item{border-radius:10px}
+body.sfb-hq .shell[data-appearance="dark"] .conv-item:hover{background:#17171a}
+body.sfb-hq .shell[data-appearance="dark"] .lead-picker-list{background:#141416;border:1px solid #232326;border-radius:12px;box-shadow:0 12px 32px rgba(0,0,0,.5)}
+body.sfb-hq .shell[data-appearance="dark"] .lead-picker-list button:hover{background:#1e1e21}
+body.sfb-hq .shell[data-appearance="dark"] .confirm-card{background:#141416;border:1px solid #232326;border-radius:16px}
