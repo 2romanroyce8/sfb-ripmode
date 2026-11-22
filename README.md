@@ -1304,3 +1304,26 @@ in a script, not a link, and stays.
   accept → sent-unconfirmed + sentBy + counter, cap 403 (ripmode-only
   and combined recep+ripmode counts), Twilio failure → failed + no
   count, refresh → delivered and undelivered + twilio-30034.
+
+## v22 — sidebar search finds leads + Analytics area chart (2026-11-22)
+Two pieces the v21 restyle left out:
+- ⌘K / sidebar search now searches LEADS, not just nav labels. Typing
+  shows a dropdown of matching leads (business, city, owner, phone
+  digits or formatted, email — same matching as the calendar's
+  Book-for-lead picker). Arrows + Enter or click picks a lead: switches
+  to RIP MODE and selects it (same ripIndex path as Prev/Next lead).
+  Escape closes + clears, Cmd/Ctrl+K focuses, click-outside closes,
+  0 leads → honest "No leads match". The nav-label filter keeps working
+  alongside it.
+- Analytics tab has the reference-style area chart ("Dials & meetings
+  over time"): dials as a green (#34d399) area + meetings as a line, from
+  computeAnalytics' perDay — so it follows the date filter (Today / 7d /
+  All time) and the Company/Personal/member scope filter. Hover tooltip
+  shows date + dials, connected, meetings. Zero calls in range → honest
+  "No calls logged yet" empty state; no fake points, no reference
+  screenshot numbers anywhere in the served files.
+- Harness /tmp/v22-harness.mjs: 53/53 (matching, perDay/scope/range,
+  chart HTML + tooltip, fake-DOM sidebar wiring, version + CSS).
+  Deployed with the fixed deploy.py only; all 7 bindings verified before
+  and after; served app.js/style.css byte-identical to local; live KV
+  untouched (46 leads, 0 callLogs).

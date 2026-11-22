@@ -958,14 +958,62 @@ function filterSidebarNav(q) {
   });
   flushLabel();
 }
+/* Lead results for the sidebar search (v22): typing also shows a dropdown
+   of matching leads — same matching as the calendar's Book-for-lead picker
+   (business, city, owner, phone digits or formatted, email). Arrows + Enter
+   pick, click picks, Escape closes. Picking a lead switches to RIP MODE
+   and selects it (same ripIndex path as Prev/Next lead). The nav filter
+   above keeps working alongside it. */
 const sidebarSearch = document.getElementById("sidebar-search");
+const sidebarResults = document.getElementById("sidebar-search-results");
+let sbHl = -1;
+function sbHideResults() {
+  if (sidebarResults) sidebarResults.classList.add("hidden");
+  if (sidebarSearch) sidebarSearch.setAttribute("aria-expanded", "false");
+  sbHl = -1;
+}
+function sbShowResults() {
+  if (!sidebarSearch || !sidebarResults) return;
+  sidebarResults.innerHTML = leadPickerItems(state ? state.leads : [], sidebarSearch.value, null);
+  sidebarResults.querySelectorAll(".lead-picker-item").forEach((el) => { el.onclick = () => sbPickLead(el.dataset.pickLead); });
+  sidebarResults.classList.remove("hidden");
+  sidebarSearch.setAttribute("aria-expanded", "true");
+}
+function sbPickLead(id) {
+  const idx = (state && state.leads ? state.leads : []).findIndex((l) => l.id === id);
+  if (idx < 0) return;
+  ripIndex = idx; smsComposerOpen = false; smsDraft = ""; smsComposerError = "";
+  sidebarSearch.value = ""; filterSidebarNav(""); sbHideResults();
+  onNavigate("rip");
+}
+function sbSetHl(i) {
+  if (!sidebarResults) return;
+  const items = Array.prototype.slice.call(sidebarResults.querySelectorAll(".lead-picker-item"));
+  sbHl = items.length ? ((i % items.length) + items.length) % items.length : -1;
+  items.forEach((el, j) => el.classList.toggle("hl", j === sbHl));
+}
 if (sidebarSearch) {
-  sidebarSearch.addEventListener("input", () => filterSidebarNav(sidebarSearch.value));
+  sidebarSearch.addEventListener("input", () => { filterSidebarNav(sidebarSearch.value); sbHl = -1; sbShowResults(); });
+  sidebarSearch.addEventListener("focus", () => sbShowResults());
   sidebarSearch.addEventListener("keydown", (e) => {
-    if (e.key === "Escape") { sidebarSearch.value = ""; filterSidebarNav(""); sidebarSearch.blur(); }
+    if (e.key === "ArrowDown") { e.preventDefault(); sbShowResults(); sbSetHl(sbHl + 1); }
+    else if (e.key === "ArrowUp") { e.preventDefault(); sbShowResults(); sbSetHl(sbHl - 1); }
+    else if (e.key === "Enter") {
+      e.preventDefault();
+      const items = sidebarResults ? Array.prototype.slice.call(sidebarResults.querySelectorAll(".lead-picker-item")) : [];
+      const el = items[sbHl >= 0 ? sbHl : 0];
+      if (el) sbPickLead(el.dataset.pickLead);
+    }
+    else if (e.key === "Escape") { sidebarSearch.value = ""; filterSidebarNav(""); sbHideResults(); sidebarSearch.blur(); }
   });
   document.addEventListener("keydown", (e) => {
     if ((e.metaKey || e.ctrlKey) && e.key.toLowerCase() === "k") { e.preventDefault(); sidebarSearch.focus(); sidebarSearch.select(); }
+  });
+  document.addEventListener("pointerdown", (e) => {
+    if (!sidebarResults || sidebarResults.classList.contains("hidden")) return;
+    let n = e.target, inside = false;
+    while (n) { if (n.classList && n.classList.contains("sidebar-search-wrap")) { inside = true; break; } n = n.parentNode; }
+    if (!inside) sbHideResults();
   });
 }
 
@@ -2275,6 +2323,49 @@ function computeAnalytics(st, repCalls, range, nowMs, scopeUser) {
   };
 }
 
+/* Analytics area chart (v22, reference UI): dials + meetings per day as an
+   SVG area/line chart — real data only, from computeAnalytics' perDay
+   (already range- and scope-filtered; receptionist calls are not plotted —
+   they stay team-wide per the existing note). Hover shows date + dials,
+   connected, meetings. Zero calls in range → honest empty state, never
+   plotted fake points. Pure SVG, no library. */
+let _anChartData = [];
+function anChartTipHtml(d) {
+  return `<b>${esc(d.label)}</b><br>${d.dials} dial${d.dials === 1 ? "" : "s"} · ${d.connected} connected · ${d.meetings} meeting${d.meetings === 1 ? "" : "s"}`;
+}
+function anAreaChartHtml(a) {
+  const pts = a.perDay || [];
+  const total = pts.reduce((s, d) => s + d.dials + d.meetings, 0);
+  if (!total) {
+    return `<div class="notice">No calls logged yet — dial a lead in RIP MODE and this chart fills in from real calls. Nothing here is seeded or estimated.</div>`;
+  }
+  const W = 660, H = 230, padL = 34, padR = 14, padT = 14, padB = 26;
+  const max = Math.max(1, ...pts.map((d) => d.dials));
+  const n = pts.length;
+  const x = (i) => n === 1 ? W / 2 : padL + (i * (W - padL - padR)) / (n - 1);
+  const y = (v) => padT + (1 - v / max) * (H - padT - padB);
+  const line = (get) => pts.map((d, i) => (i ? "L" : "M") + x(i).toFixed(1) + "," + y(get(d)).toFixed(1)).join(" ");
+  const area = line((d) => d.dials) + ` L${x(n - 1).toFixed(1)},${y(0).toFixed(1)} L${x(0).toFixed(1)},${y(0).toFixed(1)} Z`;
+  const ticks = [0, Math.round(max / 2), max].filter((v, i, arr) => arr.indexOf(v) === i);
+  const step = Math.max(1, Math.ceil(n / 7));
+  return `<div class="an-chart-wrap">
+  <svg data-an-chart viewBox="0 0 ${W} ${H}" width="100%" role="img" aria-label="Dials and meetings per day">
+    <defs><linearGradient id="an-area-grad" x1="0" y1="0" x2="0" y2="1"><stop offset="0%" stop-color="#34d399" stop-opacity="0.28"/><stop offset="100%" stop-color="#34d399" stop-opacity="0"/></linearGradient></defs>
+    ${ticks.map((v) => `<line x1="${padL}" y1="${y(v).toFixed(1)}" x2="${W - padR}" y2="${y(v).toFixed(1)}" class="an-grid"/><text x="${padL - 8}" y="${(y(v) + 4).toFixed(1)}" class="an-axis" text-anchor="end">${v}</text>`).join("")}
+    <path d="${area}" fill="url(#an-area-grad)"/>
+    <path d="${line((d) => d.dials)}" class="an-line-dials" fill="none"/>
+    <path d="${line((d) => d.meetings)}" class="an-line-meetings" fill="none"/>
+    ${pts.map((d, i) => `<circle cx="${x(i).toFixed(1)}" cy="${y(d.dials).toFixed(1)}" r="3" class="an-dot-dials"/>`).join("")}
+    ${pts.map((d, i) => `<circle cx="${x(i).toFixed(1)}" cy="${y(d.meetings).toFixed(1)}" r="3" class="an-dot-meetings"/>`).join("")}
+    ${pts.map((d, i) => (i % step === 0) ? `<text x="${x(i).toFixed(1)}" y="${H - 8}" class="an-axis" text-anchor="middle">${esc(d.label)}</text>` : "").join("")}
+    <circle id="an-chart-dot" r="4.5" class="an-dot-hl" style="display:none"/>
+    <rect data-an-chart-hit x="${padL}" y="${padT}" width="${W - padL - padR}" height="${H - padT - padB}" fill="transparent"/>
+  </svg>
+  <div class="an-chart-tip hidden" id="an-chart-tip"></div>
+  <div class="an-chart-legend"><span><i class="an-sw-dials"></i>Dials</span><span><i class="an-sw-meetings"></i>Meetings</span></div>
+</div>`;
+}
+
 function anBarRow(label, value, max, sub) {
   const pct = max > 0 ? Math.round((value / max) * 100) : 0;
   return `<div class="an-bar-row"><span class="an-bar-label">${esc(label)}</span><span class="an-bar-track"><span class="an-bar-fill" style="width:${pct}%"></span></span><span class="an-bar-val">${esc(String(value))}${sub ? ` <span class="an-bar-sub">${esc(sub)}</span>` : ""}</span></div>`;
@@ -2322,6 +2413,7 @@ function renderAnalytics() {
   }
   const scopeUser = analyticsScope === "me" ? me : (analyticsScope === "company" ? null : analyticsScope);
   const a = computeAnalytics(state, analyticsRepCalls, analyticsRange, undefined, scopeUser);
+  _anChartData = a.perDay || [];
   const rangeBtns = ANALYTICS_RANGES.map(([v, label]) => `<button class="btn ${analyticsRange === v ? "btn--primary" : ""}" data-anrange="${v}" aria-pressed="${analyticsRange === v}">${label}</button>`).join("");
   const pct = (v) => (v === null ? "—" : v + "%");
   const maxLbMeetings = Math.max(0, ...a.leaderboard.map((r) => r.meetings));
@@ -2368,7 +2460,9 @@ function renderAnalytics() {
     ${a.repMissingDuration ? `<p class="notice">${a.repMissingDuration} receptionist call${a.repMissingDuration === 1 ? "" : "s"} in this range have no duration recorded, so the minutes above are a lower bound.</p>` : ""}
   </div>
   <div class="card">
-    <div class="section-title" style="margin-top:0">Calls per day — ${a.range === "today" ? "today" : a.range === "7d" ? "last 7 days" : "all time (last 14 days)"}</div>
+    <div class="section-title" style="margin-top:0">Dials &amp; meetings over time — ${esc(a.rangeLabel)}</div>
+    ${anAreaChartHtml(a)}
+    <div class="section-title">Calls per day — ${a.range === "today" ? "today" : a.range === "7d" ? "last 7 days" : "all time (last 14 days)"}</div>
     ${a.perDay.map((d) => anBarRow(d.label, d.dials, Math.max(...a.perDay.map((x) => x.dials), 1), d.connected + " connected · " + d.meetings + " mtg")).join("")}
     <div class="section-title">Outcome breakdown — ${esc(a.rangeLabel)}</div>
     ${a.outcomes.length ? a.outcomes.map((o) => anBarRow(o.label, o.count, Math.max(...a.outcomes.map((x) => x.count), 1), o.pct + "%")).join("") : `<div class="notice">No outcomes in this range.</div>`}
@@ -2404,6 +2498,40 @@ function bindAnalytics() {
   if (refresh) refresh.onclick = () => { analyticsLoaded = false; loadAnalytics(); };
   const go = $("#an-goto-airep");
   if (go) go.onclick = () => onNavigate("airep");
+  // Area chart hover (v22): nearest day by mouse x, tooltip shows the
+  // real values for that day. Positions are computed in viewBox units so
+  // the tooltip stays aligned at any rendered width.
+  const chartSvg = document.querySelector("[data-an-chart]");
+  if (chartSvg) {
+    const tip = $("#an-chart-tip");
+    const dot = $("#an-chart-dot");
+    const hit = chartSvg.querySelector("[data-an-chart-hit]");
+    const data = _anChartData || [];
+    const W = 660, H = 230, padL = 34, padR = 14, padT = 14, padB = 26;
+    const move = (e) => {
+      if (!data.length || !tip || !dot) return;
+      const rect = chartSvg.getBoundingClientRect();
+      const frac = Math.max(0, Math.min(1, (e.clientX - rect.left) / Math.max(1, rect.width)));
+      const px = frac * W;
+      const plotW = W - padL - padR;
+      let i = data.length === 1 ? 0 : Math.round((px - padL) / (plotW / (data.length - 1)));
+      i = Math.max(0, Math.min(data.length - 1, i));
+      const d = data[i];
+      const cx = data.length === 1 ? W / 2 : padL + (i * plotW) / (data.length - 1);
+      const max = Math.max(1, ...data.map((x) => x.dials));
+      const cy = padT + (1 - d.dials / max) * (H - padT - padB);
+      dot.setAttribute("cx", cx.toFixed(1)); dot.setAttribute("cy", cy.toFixed(1)); dot.style.display = "";
+      tip.innerHTML = anChartTipHtml(d);
+      tip.classList.remove("hidden");
+      const wrap = chartSvg.closest(".an-chart-wrap");
+      const wr = wrap ? wrap.getBoundingClientRect() : rect;
+      tip.style.left = Math.max(56, Math.min(wr.width - 56, (cx / W) * wr.width)) + "px";
+      tip.style.top = Math.max(0, (cy / H) * wr.height - 56) + "px";
+    };
+    const leave = () => { if (tip) tip.classList.add("hidden"); if (dot) dot.style.display = "none"; };
+    if (hit) { hit.addEventListener("mousemove", move); hit.addEventListener("mouseleave", leave); }
+    chartSvg.addEventListener("mouseleave", leave);
+  }
   // Owner-only caps save (2026-11-21): team caps + each person's caps.
   // The worker validates every number and 403s staff — a failed save
   // shows the real error and never wipes what was typed.

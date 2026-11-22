@@ -566,3 +566,27 @@ body.sfb-hq .shell[data-appearance="dark"] .conv-item:hover{background:#17171a}
 body.sfb-hq .shell[data-appearance="dark"] .lead-picker-list{background:#141416;border:1px solid #232326;border-radius:12px;box-shadow:0 12px 32px rgba(0,0,0,.5)}
 body.sfb-hq .shell[data-appearance="dark"] .lead-picker-list button:hover{background:#1e1e21}
 body.sfb-hq .shell[data-appearance="dark"] .confirm-card{background:#141416;border:1px solid #232326;border-radius:16px}
+
+/* ---------- Sidebar lead search results (v22) ---------- */
+.sidebar-search-wrap{position:relative}
+.sidebar-search-results{position:absolute;top:calc(100% + 6px);left:12px;right:12px;max-height:280px;overflow-y:auto;background:var(--panel);border:1px solid var(--line);border-radius:12px;z-index:40;box-shadow:0 12px 32px rgba(0,0,0,.5)}
+.sidebar-search-results .lead-picker-item{border-bottom:1px solid var(--line)}
+.sidebar-search-results .lead-picker-item:last-child{border-bottom:0}
+.sidebar-search-results .lead-picker-item.hl{background:var(--panel-2)}
+body.sfb-hq .shell[data-appearance="dark"] .sidebar-search-results{background:#141416;border:1px solid #232326}
+
+/* ---------- Analytics area chart (v22) ---------- */
+.an-chart-wrap{position:relative;margin-top:4px}
+.an-chart-wrap svg{display:block}
+.an-grid{stroke:var(--line);stroke-width:1}
+.an-axis{fill:var(--faint);font-size:11px}
+.an-line-dials{stroke:#34d399;stroke-width:2;stroke-linejoin:round;stroke-linecap:round}
+.an-line-meetings{stroke:var(--text-2);stroke-width:2;stroke-linejoin:round;stroke-linecap:round}
+.an-dot-dials{fill:#34d399}
+.an-dot-meetings{fill:var(--text-2)}
+.an-dot-hl{fill:var(--bg);stroke:#34d399;stroke-width:2}
+.an-chart-tip{position:absolute;transform:translateX(-50%);background:var(--panel-2);border:1px solid var(--line);border-radius:8px;color:var(--text);font-size:12px;line-height:1.5;padding:8px 10px;pointer-events:none;white-space:nowrap;z-index:5;box-shadow:0 8px 24px rgba(0,0,0,.5)}
+.an-chart-legend{display:flex;gap:16px;margin-top:8px;color:var(--muted);font-size:12px}
+.an-chart-legend i{display:inline-block;width:10px;height:10px;border-radius:3px;margin-right:6px;vertical-align:-1px}
+.an-sw-dials{background:#34d399}
+.an-sw-meetings{background:var(--text-2)}
