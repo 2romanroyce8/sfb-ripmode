@@ -1328,6 +1328,9 @@ Two pieces the v21 restyle left out:
   and after; served app.js/style.css byte-identical to local; live KV
   untouched (46 leads, 0 callLogs).
 
+## v24 — Login hint removed (2026-11-22)
+Rome: remove the "Username, not your email — romanroyce, loganwells, or braylengarrett" hint from the login page. Removed the hint span under the Username field; the "@" login error now reads "Use your username, not your email." (no username list — the team usernames are no longer listed anywhere on the login screen). No behavior change. Live KV untouched (46 leads, 0 callLogs).
+
 ## v23 — Dashboard overview + full-panel iPad Call Log + nav fix + calendar contrast fix + full-screen login (2026-11-22)
 One deploy, five fixes Rome reported from live screenshots:
 - **Dashboard overview tab** (first in WORKSPACE, default landing tab):

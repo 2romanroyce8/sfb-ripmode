@@ -322,7 +322,7 @@ async function doLogin() {
   // permanently locked the login until a page reload (any Enter with an
   // empty/invalid passcode, or an email in Username, bricked Sign in).
   if (username.includes("@")) {
-    err.textContent = "Use your username, not your email — romanroyce, loganwells, or braylengarrett.";
+    err.textContent = "Use your username, not your email.";
     err.className = "error"; return;
   }
   if (!ALLOWED_USERS.includes(username)) {
@@ -3148,11 +3148,10 @@ $("#login-username").addEventListener("input", async (e) => {
    readonly-until-focus trick + clearAutofill() timers (300/600/2000ms) are
    what stopped Rome typing: on touch/keyboard the readonly field never
    became editable, and the timers wiped values after load. Autofill is
-   discouraged only by autocomplete="off" / "new-password" on the fields and
-   the visible "Username, not your email" hint. If Chrome autofills an email
-   into Username, submit rejects any "@" with a plain message and the user
-   can tap the field and retype — nothing wipes their input.
-   Never prefill or store his email anywhere. */
+   discouraged only by autocomplete="off" / "new-password" on the fields.
+   If Chrome autofills an email into Username, submit rejects any "@" with
+   a plain message and the user can tap the field and retype — nothing wipes
+   their input. Never prefill or store his email anywhere. */
 ["#login-passcode", "#login-confirm"].forEach((sel) => {
   const el = $(sel);
   if (!el) return;
