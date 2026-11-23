@@ -1710,7 +1710,15 @@ html:has(.shell[data-appearance="light"]) .db-sample-tag{background:rgba(180,130
    3-column grid of circular translucent action buttons, the big green
    Call circle / red End circle. All control IDs are unchanged; only the
    look changed. The phone stays dark in both dashboard themes. */
-.ios-dialer{gap:0;padding:20px 16px 12px}
+.ios-dialer{display:flex;flex-direction:column;flex:1;min-height:0;gap:0;padding:20px 16px 0}
+.ios-head{flex:none}
+.ios-ready-row{display:flex;align-items:center;gap:8px;margin-top:10px}
+.ios-ready-row .ios-status{margin-top:0;flex:1;min-width:0}
+.ios-ready-toggle{flex:none;border:0;border-radius:999px;background:rgba(255,255,255,.14);color:#fff;font:inherit;font-size:12px;font-weight:600;padding:6px 12px;cursor:pointer}
+.ios-ready-toggle.on{background:#fff;color:#000}
+.ios-scroll{flex:1;min-height:0;overflow-y:auto;padding-bottom:12px}
+.ios-footer{flex:none;padding:12px 0;border-top:1px solid rgba(255,255,255,.08);display:flex;flex-direction:column;align-items:center}
+.ios-footer .ios-end{margin:0}
 .ios-contact{text-align:center;padding:6px 0 2px}
 .ios-name{font-size:28px;font-weight:700;color:#fff;letter-spacing:-.01em;line-height:1.15}
 .ios-number{font-size:16px;color:#98989d;margin-top:4px}
@@ -1734,13 +1742,13 @@ html:has(.shell[data-appearance="light"]) .db-sample-tag{background:rgba(180,130
 .ios-end.end .ios-end-circle{background:#ff3b30}
 .ios-end.end .ios-end-circle svg{transform:rotate(135deg)}
 .ios-end-label{font-size:14px;font-weight:600;color:#fff}
-/* v29: the Call/End button never scrolls away. The phone body scrolls
-   (script/keypad/SMS panels push content down), so without this the red
-   End button sat below the fold during a call — Rome couldn't find it.
-   Sticky + margin-top:auto pins it to the bottom of the call screen,
-   exactly like a real iPhone; the opaque background keeps scrolling
-   content from showing through. */
-.ios-end{position:sticky;bottom:0;z-index:3;background:#000;margin-top:auto;padding-top:10px}
+/* v30 (2026-11-23): the v29 sticky rule is REMOVED — it could never work.
+   The phone screen clips overflow and nothing inside it scrolled, so
+   sticky had no scrolling ancestor: the red End button sat below the
+   fold, clipped and unreachable, and Rome still couldn't see it. The
+   footer (.ios-footer, flex child outside .ios-scroll) is the one
+   mechanism now — the Call/End button is always in layout, always
+   visible, in every call state, with no scrolling. */
 /* Lead enrichment display (v29) — profile cards, RIP MODE brief, chips. */
 .chip-row{display:flex;flex-wrap:wrap;gap:6px}
 .chip{display:inline-block;padding:3px 9px;border:1px solid var(--line,#232326);border-radius:999px;font-size:12px;color:var(--text-2,#e4e4e7)}
@@ -1753,8 +1761,17 @@ html:has(.shell[data-appearance="light"]) .db-sample-tag{background:rgba(180,130
 .fact-list li{margin-bottom:4px}
 .fact-src{font-size:12px;color:var(--green,#34d399)}
 .rip-online{margin-top:10px;padding-top:10px;border-top:1px solid var(--line,#232326);font-size:13px}
-.ios-ready{display:flex;gap:10px;align-items:center;margin-top:20px}
 #keypad-box .slots{display:grid;grid-template-columns:repeat(3,72px);gap:10px;justify-content:center;margin:12px 0}
 #keypad-box .slot{width:72px;height:72px;border-radius:50%;border:0;background:rgba(255,255,255,.14);color:#fff;padding:0;display:flex;flex-direction:column;align-items:center;justify-content:center;cursor:pointer}
 #keypad-box .slot .slot-digit{font-size:28px;font-weight:400;line-height:1}
 #keypad-box .slot .slot-letters{font-size:9px;letter-spacing:.14em;color:#c7c7cc;margin-top:2px}
+
+/* ---------- v30 (2026-11-23) — real-mode Dashboard mirrors sample mode ----------
+   Real mode reuses the sample's visual classes (.db-stat-sample,
+   .db-stat-top, .db-stat-numline, .db-sample-big, .db-sample-line) for
+   the exact same look — the NUMBERS stay real. Two small additions:
+   a muted "—" state for the stat pct pill, and the chart header's
+   small-stats row (Total / This month / MRR / Balance / Last updated). */
+.db-stat-pct.none{color:var(--muted)}
+.db-chart-stats{display:flex;flex-wrap:wrap;gap:4px 18px;font-size:12px;color:var(--muted);margin-top:8px}
+.db-chart-stats b{color:var(--text);font-weight:700}

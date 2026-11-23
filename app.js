@@ -1209,17 +1209,32 @@ function renderRip() {
   // is unchanged, so bindRip / syncCallUI / syncMuteUI keep working —
   // only the look changed. The mic bar, LIVE indicator, READY state,
   // keypad, script and TEXT composer all still live inside the phone.
+  // v30: the phone is a flex column — fixed header (contact + status +
+  // READY toggle + mic row) + scrollable content (grid, script/keypad/
+  // SMS panels) + FIXED footer holding Call/End. The v29 sticky rule
+  // could never work (no scrolling ancestor inside the phone screen,
+  // so the End button sat below the fold, clipped and unreachable);
+  // the footer is a plain flex child outside the scroll area, so the
+  // red End button is always visible in every call state, no scrolling.
+  // The READY toggle moved from the bottom pills to the top, next to
+  // the status text — reachable with no scrolling.
   const dialerInner = `
       <div class="iphone-dialer ios-dialer">
-        <div class="ios-contact">
-          <div class="ios-name">${esc(lead.business)}</div>
-          <div class="ios-number">${esc(lead.phone)}</div>
-          <div class="ios-status" id="call-state">${esc(callStateLabel(callState, callElapsed()))}</div>
+        <div class="ios-head">
+          <div class="ios-contact">
+            <div class="ios-name">${esc(lead.business)}</div>
+            <div class="ios-number">${esc(lead.phone)}</div>
+          </div>
+          <div class="ios-ready-row">
+            <div class="ios-status" id="call-state">${esc(callStateLabel(callState, callElapsed()))}</div>
+            <button class="ios-ready-toggle${readyOn ? " on" : ""}" id="ready-btn" type="button" aria-pressed="${readyOn}"><span id="ready-state">${readyOn ? "Ready" : "Not ready"}</span></button>
+          </div>
+          <div class="ios-microw">
+            <div class="mic-bar"><div class="mic-fill" id="mic-fill" style="width:${micLevel}%"></div></div>
+            <span class="pill" id="live-pill">${muted ? "MUTED" : "LIVE"}</span>
+          </div>
         </div>
-        <div class="ios-microw">
-          <div class="mic-bar"><div class="mic-fill" id="mic-fill" style="width:${micLevel}%"></div></div>
-          <span class="pill" id="live-pill">${muted ? "MUTED" : "LIVE"}</span>
-        </div>
+        <div class="ios-scroll">
         <div id="call-status-line" class="${callStatusLine() ? "notice" : "hidden"}" style="margin-top:6px">${esc(callStatusLine())}</div>
         <div class="ios-grid">
           <button class="ios-action${muted ? " is-muted" : ""}" id="mute-btn" type="button">
@@ -1252,16 +1267,15 @@ function renderRip() {
         <div id="keypad-box" class="hidden" style="margin-top:10px">
           <div class="slots">${[["1",""],["2","ABC"],["3","DEF"],["4","GHI"],["5","JKL"],["6","MNO"],["7","PQRS"],["8","TUV"],["9","WXYZ"],["*",""],["0","+"],["#",""]].map(([k, l]) => `<button class="slot" data-key="${k}"><span class="slot-digit">${k}</span>${l ? `<span class="slot-letters">${l}</span>` : ""}</button>`).join("")}</div>
         </div>
+        ${smsComposerOpen ? smsComposerHtml(lead) : ""}
+        </div>
+        <div class="ios-footer">
         <button class="ios-end${callState !== "idle" ? " end" : ""}" id="call-btn" type="button" ${callState === "idle" && capsBlockedReason() ? "disabled" : ""}>
           <span class="ios-end-circle"><svg viewBox="0 0 24 24" width="30" height="30" fill="currentColor" aria-hidden="true"><path d="M22 16.92v3a2 2 0 0 1-2.18 2 19.79 19.79 0 0 1-8.63-3.07 19.5 19.5 0 0 1-6-6 19.79 19.79 0 0 1-3.07-8.67A2 2 0 0 1 4.11 2h3a2 2 0 0 1 2 1.72c.127.96.361 1.903.7 2.81a2 2 0 0 1-.45 2.11L8.09 9.91a16 16 0 0 0 6 6l1.27-1.27a2 2 0 0 1 2.11-.45c.907.339 1.85.573 2.81.7A2 2 0 0 1 22 16.92z"/></svg></span>
           <span class="ios-end-label" id="call-btn-label">${callState !== "idle" ? "END CALL" : "CALL"}</span>
         </button>
         <div id="caps-block-note" class="${capsBlockedReason() ? "error" : "hidden"}" style="margin-top:8px">${esc(capsBlockedReason())}</div>
-        <div class="ios-ready">
-          <button class="btn btn--primary" id="ready-btn" style="flex:1;padding:10px">READY</button>
-          <span class="pill on" id="ready-state">${readyOn ? "Ready" : "Not ready"}</span>
         </div>
-        ${smsComposerOpen ? smsComposerHtml(lead) : ""}
       </div>`;
   return `
   <div class="grid2 rip-grid">
@@ -1385,7 +1399,11 @@ function bindRip() {
   if (readyBtn) readyBtn.onclick = async () => {
     readyOn = !readyOn;
     const rs = $("#ready-state");
-    rs.textContent = readyOn ? "Ready" : "Not ready";
+    if (rs) rs.textContent = readyOn ? "Ready" : "Not ready";
+    // v30: the toggle button itself shows the state (white when ready) —
+    // it lives at the top next to the status text, not in bottom pills.
+    readyBtn.classList.toggle("on", readyOn);
+    readyBtn.setAttribute("aria-pressed", String(readyOn));
     if (readyOn) await startMic(); else stopMic();
   };
   const muteBtn = $("#mute-btn");
@@ -2804,15 +2822,19 @@ function renderDashboardSample() {
   </div>`;
 }
 
-/* ---------- Dashboard overview (2026-11-21, v23) ----------
-   The reference screenshot's screen, rebuilt with SFB's REAL data only:
-   3 stat cards (Leads / Connect rate / Meetings booked) with vs-last-week
-   delta pills, a Dials-over-time area chart (reuses the v22 chart code),
-   a Leads Management panel (Status / Sources / Qualification) and a Team
-   panel (leaderboard). Read-only: every card and panel links to its real
-   tab. No revenue, no CLV, no retention — SFB has none of those yet, so
-   they are not shown. No fake numbers anywhere. */
-let dbRange = "7d"; // chart range, same options as Analytics
+/* ---------- Dashboard overview (2026-11-21, v23) — reworked 2026-11-23, v30 ----------
+   Real mode now mirrors the sample mode's layout exactly — 3 stat cards,
+   one full-width Revenue-over-time chart, Leads Management + Retention
+   Rate side by side — but every number is REAL SFB data. The stat cards
+   keep the real metrics (Leads / Connect rate / Meetings booked) in the
+   sample's 2-row look; the chart draws the real SFB-only Stripe monthly
+   totals (all time, Jan–Nov 2026: $0 everywhere except Oct $1.00), so
+   the line is nearly flat — honest, not a bug. Retention has no figure
+   in the data yet, so it shows the sample's layout with empty bars and
+   an honest empty state, never 95%. The standalone Revenue — Stripe
+   card is gone from real mode (its totals live in the chart header);
+   the Dials-over-time chart and the Team panel live in Analytics now.
+   Sample mode (renderDashboardSample) is untouched. No fake numbers. */
 let dbLeadsTab = "status"; // "status" | "sources" | "qual"
 
 /* Pure: this-week vs prior-week deltas from callLogs (server-dated
@@ -2836,7 +2858,8 @@ function dbWeekDeltas(st, nowMs) {
   const ratePts = (rThis === null || rPrior === null) ? null : Math.round((rThis - rPrior) * 1000) / 10;
   const mThis = thisW.filter((c) => c.outcome === "meeting_booked").length;
   const mPrior = priorW.filter((c) => c.outcome === "meeting_booked").length;
-  return {dials: diff(thisW.length, priorW.length), ratePts, meetings: diff(mThis, mPrior)};
+  return {dials: diff(thisW.length, priorW.length), ratePts, meetings: diff(mThis, mPrior),
+    rateThis: rThis, ratePrior: rPrior, meetingsThis: mThis, meetingsPrior: mPrior};
 }
 /* Delta pill: green when up, red when down, neutral "—" when there is
    nothing to compare. The value is an absolute change (dials, meetings)
@@ -2847,15 +2870,113 @@ function dbDeltaPill(v, suffix) {
   const sign = v > 0 ? "+" : "";
   return `<span class="db-delta ${cls}">${sign}${v}${suffix || ""}</span>`;
 }
+/* Relative percent change vs a prior period — null (rendered "—") whenever
+   the math is degenerate: either side missing, or zero on either side
+   (a $1.00 → $0 month is -100% on paper and meaningless in practice).
+   Never a fake percent. */
+function pctChange(cur, prev) {
+  if (cur === null || cur === undefined || prev === null || prev === undefined) return null;
+  if (!(prev > 0) || !(cur > 0)) return null;
+  return Math.round(((cur - prev) / prev) * 1000) / 10;
+}
+/* Plain-text delta (no pill background), as in the sample's stat cards:
+   "+2" / "-1" / "—". */
+function dbDeltaPlain(v, suffix) {
+  if (v === null || v === undefined) return `<span class="db-delta none db-delta-plain">—</span>`;
+  const cls = v === 0 ? "none" : (v > 0 ? "up" : "down");
+  const sign = v > 0 ? "+" : "";
+  return `<span class="db-delta ${cls} db-delta-plain">${sign}${v}${suffix || ""}</span>`;
+}
+/* Top-right pct pill of a stat card, as in the sample: "● 8.0%" / "—". */
+function dbPctPill(pct) {
+  if (pct === null || pct === undefined) return `<span class="db-stat-pct none">—</span>`;
+  const cls = pct === 0 ? "none" : (pct > 0 ? "up" : "down");
+  return `<span class="db-stat-pct ${cls}">● ${pct}%</span>`;
+}
+/* Y-axis money label for the real revenue chart: "$1", "$0.50", "$10k". */
+function fmtAxisMoney(v) {
+  const n = Number(v) || 0;
+  if (n >= 1000) {
+    const k = Math.round((n / 100) / 10);
+    return "$" + (Number.isInteger(k) ? k : (Math.round(k * 10) / 10)) + "k";
+  }
+  if (n === 0) return "$0";
+  return "$" + (Math.round(n * 100) / 100);
+}
+/* Nice y-axis ceiling for the real revenue chart (1, 2, 2.5, 5, 10 × 10^k). */
+function niceYMax(max) {
+  if (!(max > 0)) return 1;
+  const pow = Math.pow(10, Math.floor(Math.log10(max)));
+  const n = max / pow;
+  const nice = n <= 1 ? 1 : n <= 2 ? 2 : n <= 2.5 ? 2.5 : n <= 5 ? 5 : 10;
+  return nice * pow;
+}
+/* Honest month-over-month revenue delta: null when degenerate (see pctChange). */
+function revenueDeltaPct(t) {
+  return pctChange(Number(t.thisMonth) || 0, Number(t.lastMonth) || 0);
+}
+/* Real revenue area chart (v30, 2026-11-23) — the sample chart's exact
+   styling (white line, white gradient fill, dashed gridlines, same axes,
+   hover tooltip with date + amount via bindAreaChart) drawn from the
+   REAL Stripe monthly totals. The line is nearly flat because the real
+   revenue really is $1.00 so far — that is honest, not a rendering bug.
+   No pinned hover state: hovering a month shows its tooltip; leaving
+   hides it (bindAreaChart's non-sample path). Points carry {label, tip,
+   revenue} so anChartTipHtml shows "Revenue $". */
+function realRevenueChartHtml(points) {
+  const W = 860, H = 252, padL = 44, padR = 12, padT = 12, padB = 30;
+  const maxVal = Math.max(0, ...points.map((d) => d.revenue));
+  const yMax = niceYMax(maxVal);
+  const n = points.length;
+  const x = (i) => n === 1 ? W / 2 : padL + (i * (W - padL - padR)) / (n - 1);
+  const y = (v) => padT + (1 - v / yMax) * (H - padT - padB);
+  const line = points.map((d, i) => (i ? "L" : "M") + x(i).toFixed(1) + "," + y(d.revenue).toFixed(1)).join(" ");
+  const area = line + ` L${x(n - 1).toFixed(1)},${y(0).toFixed(1)} L${x(0).toFixed(1)},${y(0).toFixed(1)} Z`;
+  const ticks = [0, yMax / 4, yMax / 2, (3 * yMax) / 4, yMax];
+  const labelIdx = points.map((_, i) => i).filter((i) => i % 2 === 0);
+  return `<div class="an-chart-wrap">
+  <svg data-an-chart data-w="${W}" data-h="${H}" data-padl="${padL}" data-padr="${padR}" data-padt="${padT}" data-padb="${padB}" data-ymax="${yMax}" viewBox="0 0 ${W} ${H}" width="100%" role="img" aria-label="Revenue over time">
+    <defs><linearGradient id="db-real-area-grad" x1="0" y1="0" x2="0" y2="1"><stop offset="0%" stop-color="#ffffff" stop-opacity="0.16"/><stop offset="100%" stop-color="#ffffff" stop-opacity="0"/></linearGradient></defs>
+    ${ticks.map((v) => `<line x1="${padL}" y1="${y(v).toFixed(1)}" x2="${W - padR}" y2="${y(v).toFixed(1)}" class="an-grid-dash"/><text x="${padL - 8}" y="${(y(v) + 4).toFixed(1)}" class="an-axis" text-anchor="end" fill="#9c9ca3" font-size="12">${fmtAxisMoney(v)}</text>`).join("")}
+    <path d="${area}" fill="url(#db-real-area-grad)"/>
+    <path d="${line}" class="db-sample-line" fill="none"/>
+    ${labelIdx.map((i) => i === n - 1
+      ? `<text x="${x(i).toFixed(1)}" y="${H - 8}" class="an-axis" text-anchor="end" fill="#9c9ca3" font-size="12">${esc(points[i].label)}</text>`
+      : `<text x="${x(i).toFixed(1)}" y="${H - 8}" class="an-axis" text-anchor="middle" fill="#9c9ca3" font-size="12">${esc(points[i].label)}</text>`).join("")}
+    <circle id="an-chart-dot" r="5" class="db-sample-dot" style="display:none"/>
+    <rect data-an-chart-hit x="${padL}" y="${padT}" width="${W - padL - padR}" height="${H - padT - padB}" fill="transparent"/>
+  </svg>
+  <div class="an-chart-tip hidden" id="an-chart-tip"></div>
+</div>`;
+}
+/* Retention bars (v30) — the sample's exact SVG frame, but every bar is
+   height 0: there is no retention data yet, so the panel shows empty
+   bars + the honest empty state below — never the sample's 95%. */
+function realRetentionBarsHtml() {
+  const W = 560, H = 170, base = 150, bw = 12, inGap = 5, pitch = 78;
+  const order = [1, 0, 2];
+  const colors = ["#f2f2f5", "#43434a", "#8e8e96"];
+  const rects = Array.from({length: 7}, (_, gi) => order.map((bi, k) => {
+    const bx = gi * pitch + k * (bw + inGap);
+    return `<rect x="${bx}" y="${base}" width="${bw}" height="0" rx="2" fill="${colors[k]}"/>`;
+  }).join("")).join("");
+  return `<svg viewBox="0 0 ${W} ${H}" width="100%" role="img" aria-label="Retention by segment — no data yet">
+    <line x1="0" y1="${base}" x2="${W}" y2="${base}" class="an-grid"/>${rects}
+  </svg>`;
+}
 function renderDashboard() {
   if (dbSampleOn()) return renderDashboardSample();
   const leads = state.leads || [];
   const aAll = computeAnalytics(state, [], "all", undefined, null);
-  const aChart = computeAnalytics(state, [], dbRange, undefined, null);
-  _anChartData = aChart.perDay || [];
+  _anChartData = []; // the revenue chart below sets it to the monthly points (if any)
   const deltas = dbWeekDeltas(state);
   const connectRate = aAll.connectRate; // null when 0 dials
-  const rangeBtns = ANALYTICS_RANGES.map(([v, label]) => `<button class="btn ${dbRange === v ? "btn--primary" : ""}" data-dbrange="${v}" aria-pressed="${dbRange === v}">${label}</button>`).join("");
+  // Stat-card pct pills: relative change vs prior week, "—" when the
+  // math is degenerate. Leads carry no creation dates, so theirs is
+  // always "—" (same as the absolute delta below it).
+  const leadsPct = null;
+  const ratePct = pctChange(deltas.rateThis, deltas.ratePrior);
+  const meetingsPct = pctChange(deltas.meetingsThis, deltas.meetingsPrior);
   // Leads Management — Status: the 5 real pipeline stages with counts.
   const stageCounts = STAGES.map((s) => ({stage: s, n: leads.filter((l) => (l.stage || "New") === s).length}));
   // Sources: by lead list on file — Naples 239 vs Jax / Performance.
@@ -2874,32 +2995,60 @@ function renderDashboard() {
     : dbLeadsTab === "sources"
     ? srcCounts.map((s) => anBarRow(s.label, s.n, maxLeads, "")).join("") + `<p class="notice">By lead list on file. The Tampa + Miami lists are not loaded yet.</p>`
     : anBarRow("In ICP — FL residential roofer", inIcp, maxLeads, "") + anBarRow("Outside ICP", leads.length - inIcp, maxLeads, "") + `<p class="notice">ICP = Florida residential roofers, $1–5M/yr, owner-operator. Verification flags (verify / do-not-pitch) live in the research notes, not in dialer data yet.</p>`;
-  const maxLbMeetings = Math.max(0, ...aChart.leaderboard.map((r) => r.meetings));
-  const teamRows = aChart.leaderboard.map((r, i) => `<div class="lb-row"><span class="lb-rank">#${i + 1}</span><span class="lb-name"><b>${esc(r.name)}</b></span><span class="lb-nums">${r.meetings} meetings · ${r.connected} connected · ${r.dials} dials</span><span class="lb-bar"><span style="width:${maxLbMeetings ? Math.round((r.meetings / maxLbMeetings) * 100) : 0}%"></span></span></div>`).join("");
+  // Retention: no retention figure exists in the data yet. The panel
+  // shows the sample's layout with an honest empty state — never 95%.
+  const wonCount = leads.filter((l) => (l.stage || "New") === "Won").length;
+  const retentionNote = wonCount === 0
+    ? "No clients yet — retention shows once you have won clients."
+    : "Retention isn't measured yet — no churn data on file.";
+  // Revenue chart (real Stripe monthly totals, SFB-only, all time).
+  // The standalone Revenue — Stripe card is gone from real mode: its
+  // totals live in this chart panel's header as small stats. Sample
+  // mode is untouched — it still renders the real Stripe card.
+  const infoSvg = `<svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><circle cx="12" cy="12" r="10"/><path d="M12 16v-4"/><path d="M12 8h.01"/></svg>`;
+  const revenueCard = (() => {
+    const head = (inner) => `<div class="card db-chart-card">
+    <div class="db-chart-head"><span class="db-chart-title">Revenue over time <span class="db-info">${infoSvg}</span></span></div>
+    ${inner}</div>`;
+    if (stripeTotals === undefined) return head(`<div class="notice">Loading Stripe totals…</div>`);
+    if (!stripeTotals) return head(`<div class="notice">Stripe not connected yet — connect it to see real revenue here.</div>`);
+    const t = stripeTotals;
+    const monthly = Array.isArray(t.monthly) ? t.monthly : [];
+    if (!monthly.length) return head(`<div class="notice">No monthly revenue data on file yet.</div>`);
+    const points = monthly.map((x) => {
+      const mm = String(x.month || "").match(/^(\d{4})-(\d{2})$/);
+      const mi = mm ? Number(mm[2]) - 1 : 0;
+      return {label: STRIPE_MONTHS[mi], tip: stripeMonthLabel(x.month), revenue: Number(x.amount) || 0};
+    });
+    _anChartData = points;
+    const pct = revenueDeltaPct(t);
+    const deltaHtml = pct === null
+      ? `<span class="db-delta none db-delta-plain">—</span>`
+      : `<span class="db-delta ${pct > 0 ? "up" : pct < 0 ? "down" : "none"} db-delta-plain">${pct > 0 ? "+" : ""}${pct}%</span>`;
+    const updated = fmtStripeDate(t.lastUpdated);
+    return `<div class="card db-chart-card">
+    <div class="db-chart-head"><span class="db-chart-title">Revenue over time <span class="db-info">${infoSvg}</span></span><span class="db-chart-delta"><span class="db-dot"></span>${deltaHtml} <span class="db-muted">vs last month</span></span></div>
+    <div class="db-sample-big">${stripeMoney(t.totalGross)}</div>
+    <div class="db-chart-stats"><span>Total <b>${stripeMoney(t.totalGross)}</b></span><span>This month <b>${stripeMoney(t.thisMonth)}</b></span><span>MRR <b>${stripeMoney(t.mrr)}</b></span><span>Balance <b>${stripeMoney(t.balance)}</b></span><span class="db-muted">${updated ? `Last updated ${esc(updated)} · ` : ""}Live Stripe</span></div>
+    ${realRevenueChartHtml(points)}
+  </div>`;
+  })();
   return `
   <div class="db-stats">
-    <button type="button" class="db-stat" data-dbgo="leads">
-      <span class="db-stat-label">Leads</span>
-      <span class="db-stat-num">${leads.length}</span>
-      <span class="db-stat-sub">${dbDeltaPill(null)} <span>vs last week</span></span>
+    <button type="button" class="db-stat db-stat-sample" data-dbgo="leads">
+      <span class="db-stat-top"><span class="db-stat-label">Leads</span>${dbPctPill(leadsPct)}</span>
+      <span class="db-stat-numline"><span class="db-stat-num">${leads.length}</span><span class="db-stat-delta">${dbDeltaPlain(null)} <span>vs last week</span></span></span>
     </button>
-    <button type="button" class="db-stat" data-dbgo="analytics">
-      <span class="db-stat-label">Connect rate</span>
-      <span class="db-stat-num">${connectRate === null ? "—" : connectRate + "%"}</span>
-      <span class="db-stat-sub">${dbDeltaPill(deltas.ratePts, " pts")} <span>vs last week</span></span>
+    <button type="button" class="db-stat db-stat-sample" data-dbgo="analytics">
+      <span class="db-stat-top"><span class="db-stat-label">Connect rate</span>${dbPctPill(ratePct)}</span>
+      <span class="db-stat-numline"><span class="db-stat-num">${connectRate === null ? "—" : connectRate + "%"}</span><span class="db-stat-delta">${dbDeltaPlain(deltas.ratePts, " pts")} <span>vs last week</span></span></span>
     </button>
-    <button type="button" class="db-stat" data-dbgo="calendar">
-      <span class="db-stat-label">Meetings booked</span>
-      <span class="db-stat-num">${aAll.meetings}</span>
-      <span class="db-stat-sub">${dbDeltaPill(deltas.meetings)} <span>vs last week</span></span>
+    <button type="button" class="db-stat db-stat-sample" data-dbgo="calendar">
+      <span class="db-stat-top"><span class="db-stat-label">Meetings booked</span>${dbPctPill(meetingsPct)}</span>
+      <span class="db-stat-numline"><span class="db-stat-num">${aAll.meetings}</span><span class="db-stat-delta">${dbDeltaPlain(deltas.meetings)} <span>vs last week</span></span></span>
     </button>
   </div>
-  ${stripeRevenueCardHtml()}
-  <div class="card db-chart-card">
-    <div class="db-card-head"><div class="section-title" style="margin-top:0">Dials over time — ${esc(aChart.rangeLabel)}</div><div class="an-range">${rangeBtns}</div></div>
-    ${anAreaChartHtml(aChart)}
-    <p class="notice">Dials and meetings from real calls only. No revenue is shown — BillMe is in test mode ($0 real money).</p>
-  </div>
+  ${revenueCard}
   <div class="db-panels">
     <div class="card db-panel">
       <div class="db-card-head"><div class="section-title" style="margin-top:0">Leads Management</div><button class="btn" data-dbgo="pipeline">View Pipeline</button></div>
@@ -2911,9 +3060,11 @@ function renderDashboard() {
       <div style="margin-top:14px">${lmBody}</div>
     </div>
     <div class="card db-panel">
-      <div class="db-card-head"><div class="section-title" style="margin-top:0">Team — ${esc(aChart.rangeLabel)}</div><button class="btn" data-dbgo="analytics">View Analytics</button></div>
-      ${teamRows}
-      <p class="notice">Ranked by meetings booked, then connected, then dials. Always the full team.</p>
+      <div class="db-card-head"><div class="section-title" style="margin-top:0">Retention Rate</div><span class="db-ret-menu" aria-hidden="true">⋮</span></div>
+      <div class="db-sample-big">— <span class="db-delta none db-delta-plain">—</span> <span class="db-muted">vs last month</span></div>
+      <div class="db-ret-legend"><span><i class="db-ret-sw" style="background:#43434a"></i>Enterprises</span><span><i class="db-ret-sw" style="background:#f2f2f5"></i>SMEs</span><span><i class="db-ret-sw" style="background:#8e8e96"></i>Startups</span></div>
+      ${realRetentionBarsHtml()}
+      <p class="notice">${retentionNote}</p>
     </div>
   </div>`;
 }
@@ -2921,7 +3072,6 @@ function bindDashboard() {
   const sampleBtn = $("#db-sample-btn");
   if (sampleBtn) sampleBtn.onclick = () => setDbSample(!dbSample);
   document.querySelectorAll("[data-dbgo]").forEach((b) => b.onclick = () => onNavigate(b.dataset.dbgo));
-  document.querySelectorAll("[data-dbrange]").forEach((b) => b.onclick = () => { dbRange = b.dataset.dbrange; render(); });
   document.querySelectorAll("[data-dbleads]").forEach((b) => b.onclick = () => { dbLeadsTab = b.dataset.dbleads; render(); });
   bindAreaChart();
 }
