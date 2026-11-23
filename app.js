@@ -20,7 +20,7 @@ const GV_NUMBER = "(213) 495-3536";
    getLocalStream / sendDigits / mute). Loaded lazily, only when CALL is
    pressed — the dashboard never depends on the CDN to render. */
 const TWILIO_SDK_URL = "https://cdn.jsdelivr.net/npm/@twilio/voice-sdk@2.19.0/dist/twilio.min.js";
-const CAL_LINK = "https://cal.com/roman-royce/30min";
+const CAL_LINK = "https://cal.com/roman-royce-ofbz61/30min";
 // Public Packages page (2026-11-23, v28): the 4 packages + offer + free
 // gifts, from the Offer Pack SOP §1-3. Sent with every booked call (SMS +
 // E1 email) so the prospect sees what SFB sells. No auth on the page.
@@ -944,7 +944,7 @@ const TAB_META = {
   rip: ["RIP MODE", ""], // no subtitle under the dialer heading (removed 2026-11-20 at Rome's request; GV number still shown on CALL/TEXT + in the thread note)
   leads: ["Leads", "New leads start in the Pipeline at \"New\"."],
   pipeline: ["Client Pipeline", "5 stages. Move a card with the arrows or the stage picker."],
-  calendar: ["Calendar", "Cal.com — pick an event type, a day, and a time. Booking opens your real Cal.com link: https://cal.com/roman-royce/30min"],
+  calendar: ["Calendar", "Cal.com — pick an event type, a day, and a time. Booking opens your real Cal.com link: https://cal.com/roman-royce-ofbz61/30min"],
   calllog: ["Call Log", "Every call, mirrored as a conversation. Tap a lead to open its chat thread."],
   airep: ["AI Rep", "See every call the AI receptionist takes — and change what callers hear on the next call."],
   analytics: ["Analytics", "Real numbers from the dialer and the receptionist — nothing invented."],
@@ -1893,12 +1893,12 @@ function bindPipeline() {
    Lengths are the Cal.com API truth: Secret is 15 min and Discovery
    is 60 min on Cal.com (the old picker said 30 for both). */
 const CAL_TYPES = [
-  {id: "15min", name: "15 min", desc: "15 minutes · Video call", mins: 15, link: "https://cal.com/roman-royce/15min"},
-  {id: "30min", name: "30 min", desc: "30 minutes · Video call", mins: 30, link: "https://cal.com/roman-royce/30min"},
-  {id: "1hr", name: "1 hr", desc: "60 minutes · Video call", mins: 60, link: "https://cal.com/roman-royce/1hr"},
-  {id: "discovery", name: "Discovery Call", desc: "Discovery · Video call", mins: 60, link: "https://cal.com/roman-royce/sfb-discovery-call"},
-  {id: "secret", name: "Secret Meeting", desc: "Private · Video call", mins: 15, link: "https://cal.com/roman-royce/secret"},
-  {id: "client-call", name: "Client Call", desc: "Closing deals, updates, check-ins · Video call", mins: 30, link: "https://cal.com/roman-royce/client-call"},
+  {id: "15min", name: "15 min", desc: "15 minutes · Video call", mins: 15, link: "https://cal.com/roman-royce-ofbz61/15min"},
+  {id: "30min", name: "30 min", desc: "30 minutes · Video call", mins: 30, link: "https://cal.com/roman-royce-ofbz61/30min"},
+  {id: "1hr", name: "1 hr", desc: "60 minutes · Video call", mins: 60, link: "https://cal.com/roman-royce-ofbz61/1hr"},
+  {id: "discovery", name: "Discovery Call", desc: "Discovery · Video call", mins: 60, link: "https://cal.com/roman-royce-ofbz61/sfb-discovery-call"},
+  {id: "secret", name: "Secret Meeting", desc: "Private · Video call", mins: 15, link: "https://cal.com/roman-royce-ofbz61/secret"},
+  {id: "client-call", name: "Client Call", desc: "Closing deals, updates, check-ins · Video call", mins: 30, link: "https://cal.com/roman-royce-ofbz61/client-call"},
 ];
 const SLOT_TIMES = ["9:00 AM","9:30 AM","10:00 AM","10:30 AM","11:00 AM","11:30 AM","1:00 PM","1:30 PM","2:00 PM","2:30 PM","3:00 PM","3:30 PM","4:00 PM","4:30 PM"];
 const CAL_TZONES = ["America/New_York", "America/Chicago", "America/Denver", "America/Los_Angeles", "America/Phoenix"];
