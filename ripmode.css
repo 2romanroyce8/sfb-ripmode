@@ -771,3 +771,54 @@ html:has(.shell[data-appearance="light"]) .db-sample-tag{background:rgba(180,130
 /* Retention (sample): ⋮ menu instead of a button; legend ABOVE the bars. */
 .db-ret-menu{font-size:18px;line-height:1;color:var(--muted);padding:2px 6px;cursor:pointer}
 .db-sample-view .db-ret-legend{margin:14px 0 0}
+
+/* Time Clock (v28, 2026-11-23): clock in/out, team status board, log. */
+.tc-board{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:12px}
+@media(max-width:900px){.tc-board{grid-template-columns:1fr}}
+.tc-member{display:flex;justify-content:space-between;align-items:center;gap:12px}
+.tc-dot{display:inline-block;width:9px;height:9px;border-radius:50%;background:#52525b;vertical-align:middle;margin-right:6px}
+.tc-dot--in{background:#34d399}
+.tc-table{width:100%;border-collapse:collapse;margin-top:14px;font-size:14px}
+.tc-table th{text-align:left;font-size:12px;color:var(--muted);font-weight:600;padding:8px 10px;border-bottom:1px solid var(--line)}
+.tc-table td{padding:10px;border-bottom:1px solid var(--line);vertical-align:middle}
+.tc-table tr:last-child td{border-bottom:0}
+.tc-row--open td{background:rgba(52,211,153,.05)}
+.tc-row--removed td{color:var(--muted);text-decoration:line-through}
+.tc-row--removed td:last-child{text-decoration:none}
+.tc-del{padding:2px 8px;font-size:14px;line-height:1.2;margin-left:4px}
+
+/* iOS Phone in-call dialer (v28, 2026-11-23): the dialer interior inside
+   the existing iPhone frame, rebuilt to look like the real iOS Phone app
+   in-call screen — contact name + number + live status/timer up top, a
+   3-column grid of circular translucent action buttons, the big green
+   Call circle / red End circle. All control IDs are unchanged; only the
+   look changed. The phone stays dark in both dashboard themes. */
+.ios-dialer{gap:0;padding:20px 16px 12px}
+.ios-contact{text-align:center;padding:6px 0 2px}
+.ios-name{font-size:28px;font-weight:700;color:#fff;letter-spacing:-.01em;line-height:1.15}
+.ios-number{font-size:16px;color:#98989d;margin-top:4px}
+.ios-status{font-size:15px;color:#98989d;margin-top:10px;min-height:20px}
+.ios-microw{display:flex;align-items:center;gap:8px;margin-top:14px}
+.ios-microw .mic-bar{flex:1}
+.ios-microw .pill{flex:none}
+.ios-grid{display:grid;grid-template-columns:repeat(3,1fr);gap:16px 8px;justify-items:center;margin:24px 0 4px}
+.ios-action{display:flex;flex-direction:column;align-items:center;gap:6px;background:transparent;border:0;padding:0;cursor:pointer;color:#fff;font:inherit}
+.ios-action:disabled{opacity:.35;cursor:default}
+.ios-action-circle{width:64px;height:64px;border-radius:50%;background:rgba(255,255,255,.14);display:flex;align-items:center;justify-content:center;color:#fff;position:relative}
+.ios-action-circle svg{width:26px;height:26px}
+.ios-action-label{font-size:13px;color:#fff}
+.ios-mute-slash{display:none;position:absolute;inset:0;margin:auto}
+.ios-action.is-muted .ios-action-circle{background:#fff;color:#000}
+.ios-action.is-muted .ios-mute-slash{display:block}
+.ios-end{display:flex;flex-direction:column;align-items:center;gap:8px;background:transparent;border:0;padding:0;margin:20px auto 0;cursor:pointer;color:#fff;font:inherit}
+.ios-end:disabled{opacity:.5;cursor:default}
+.ios-end-circle{width:72px;height:72px;border-radius:50%;background:#30d158;display:flex;align-items:center;justify-content:center;color:#fff}
+.ios-end-circle svg{width:30px;height:30px}
+.ios-end.end .ios-end-circle{background:#ff3b30}
+.ios-end.end .ios-end-circle svg{transform:rotate(135deg)}
+.ios-end-label{font-size:14px;font-weight:600;color:#fff}
+.ios-ready{display:flex;gap:10px;align-items:center;margin-top:20px}
+#keypad-box .slots{display:grid;grid-template-columns:repeat(3,72px);gap:10px;justify-content:center;margin:12px 0}
+#keypad-box .slot{width:72px;height:72px;border-radius:50%;border:0;background:rgba(255,255,255,.14);color:#fff;padding:0;display:flex;flex-direction:column;align-items:center;justify-content:center;cursor:pointer}
+#keypad-box .slot .slot-digit{font-size:28px;font-weight:400;line-height:1}
+#keypad-box .slot .slot-letters{font-size:9px;letter-spacing:.14em;color:#c7c7cc;margin-top:2px}

@@ -1,0 +1,139 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Packages — Six Figure Blueprints</title>
+<style>
+  /* Prospect-facing Packages page (2026-11-23, v28). Dark theme, same
+     palette as the SFB dashboard: page #0a0a0c, cards #141416, hairlines
+     #232326, muted #9c9ca3, green #34d399. Self-contained — no app CSS. */
+  * { box-sizing: border-box; }
+  body { margin: 0; background: #0a0a0c; color: #f4f4f5;
+    font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
+    -webkit-font-smoothing: antialiased; }
+  a { color: #34d399; }
+  .wrap { max-width: 960px; margin: 0 auto; padding: 40px 20px 64px; }
+  .eyebrow { font-size: 12px; letter-spacing: .14em; font-weight: 700; color: #9c9ca3; text-transform: uppercase; }
+  h1 { font-size: 34px; line-height: 1.15; margin: 10px 0 8px; letter-spacing: -0.5px; }
+  .sub { font-size: 17px; line-height: 1.55; color: #9c9ca3; margin: 0 0 28px; max-width: 640px; }
+  .offer { background: #141416; border: 1px solid #232326; border-radius: 14px; padding: 22px 24px; margin-bottom: 28px; }
+  .offer h2 { font-size: 19px; margin: 0 0 6px; }
+  .offer p { margin: 0 0 16px; color: #9c9ca3; line-height: 1.55; }
+  .btn { display: inline-block; background: #34d399; color: #06281c; font-weight: 700; font-size: 15px;
+    padding: 12px 20px; border-radius: 10px; text-decoration: none; }
+  .btn:hover { background: #4ade80; }
+  .btn-ghost { display: inline-block; border: 1px solid #232326; color: #f4f4f5; font-weight: 600; font-size: 15px;
+    padding: 12px 20px; border-radius: 10px; text-decoration: none; margin-left: 10px; }
+  .grid { display: grid; grid-template-columns: 1fr 1fr; gap: 16px; }
+  @media (max-width: 720px) { .grid { grid-template-columns: 1fr; } h1 { font-size: 28px; } }
+  .card { background: #141416; border: 1px solid #232326; border-radius: 14px; padding: 22px 24px; }
+  .card.flagship { border-color: #34d399; }
+  .tag { display: inline-block; font-size: 11px; font-weight: 700; letter-spacing: .08em; text-transform: uppercase;
+    color: #34d399; border: 1px solid #34d399; border-radius: 999px; padding: 3px 9px; margin-bottom: 10px; }
+  .tag.muted { color: #9c9ca3; border-color: #3f3f46; }
+  .card h2 { font-size: 20px; margin: 0 0 4px; }
+  .card .for { font-size: 13px; color: #9c9ca3; margin: 0 0 12px; line-height: 1.5; }
+  .card ul { margin: 0 0 14px; padding-left: 18px; color: #d4d4d8; line-height: 1.65; font-size: 14px; }
+  .price { font-size: 17px; font-weight: 700; margin: 0; }
+  .price span { display: block; font-size: 13px; font-weight: 500; color: #9c9ca3; margin-top: 4px; line-height: 1.5; }
+  .tiers { display: flex; gap: 10px; margin: 0 0 14px; flex-wrap: wrap; }
+  .tier { flex: 1; min-width: 90px; background: #0a0a0c; border: 1px solid #232326; border-radius: 10px; padding: 12px; text-align: center; }
+  .tier b { display: block; font-size: 19px; }
+  .tier span { font-size: 12px; color: #9c9ca3; }
+  .gifts { background: #141416; border: 1px solid #232326; border-radius: 14px; padding: 22px 24px; margin-top: 16px; }
+  .gifts h2 { font-size: 19px; margin: 0 0 12px; }
+  .gifts ul { margin: 0; padding-left: 18px; color: #d4d4d8; line-height: 1.7; font-size: 14px; }
+  .gifts li b { color: #f4f4f5; }
+  .foot { margin-top: 32px; color: #71717a; font-size: 13px; line-height: 1.6; text-align: center; }
+  .foot a { color: #9c9ca3; }
+</style>
+</head>
+<body>
+<div class="wrap">
+  <div class="eyebrow">Six Figure Blueprints</div>
+  <h1>What we do for your business</h1>
+  <p class="sub">We build AI systems that answer every call, book the job, and follow up — so no customer ever gets voicemail again.</p>
+
+  <div class="offer">
+    <h2>The offer: a free discovery call</h2>
+    <p>Every business starts with a free 30-minute discovery call — and on that call, a free audit and scope for your business. The audit shows how many calls you're missing and what those missed calls are costing. The scope is what we'd build for you, what it would do, and what it would cost. No obligation.</p>
+    <a class="btn" href="https://cal.com/roman-royce/30min">Book your free discovery call</a>
+    <a class="btn-ghost" href="tel:+12393499491">or call (239) 349-9491</a>
+  </div>
+
+  <div class="grid">
+    <div class="card">
+      <span class="tag">Entry</span>
+      <h2>AI Receptionist &ldquo;Ava&rdquo;</h2>
+      <p class="for">An AI receptionist that answers every call, 24/7, as Six Figure Blueprints.</p>
+      <ul>
+        <li>Ava on your business number — answers, books, takes messages</li>
+        <li>Books free discovery calls, live on the phone or by text</li>
+        <li>Transfers real inquiries to your team, live</li>
+        <li>Owner summary text after every call</li>
+        <li>Call log + transcripts in your dashboard</li>
+      </ul>
+      <p class="price">Pricing on your discovery call<span>No obligation — pricing is worked out on the free call, after the free audit.</span></p>
+    </div>
+
+    <div class="card flagship">
+      <span class="tag">Flagship &middot; Done-for-you</span>
+      <h2>The $50K Roofer AI System</h2>
+      <p class="for">For Florida residential roofers, $1&ndash;5M/yr, 5&ndash;20 staff, owner-operator. About 27% of calls go unanswered — at $300&ndash;$1,200 per missed call.</p>
+      <ul>
+        <li>Ava, the AI receptionist — every call answered, 24/7</li>
+        <li>Missed-call text-back, so a missed call still books</li>
+        <li>CRM with pipeline — every lead tracked to the job</li>
+        <li>Automated follow-ups after every call</li>
+      </ul>
+      <p class="price">$10,000&ndash;$35,000 done-for-you, or from $1,497/month<span>Exact tier for your business is set on the discovery call.</span></p>
+    </div>
+
+    <div class="card">
+      <span class="tag muted">Downsell wedge</span>
+      <h2>Presence</h2>
+      <p class="for">The cheap way in — AI presence for your business that leads to the full system.</p>
+      <div class="tiers">
+        <div class="tier"><b>$19.99</b><span>starter</span></div>
+        <div class="tier"><b>$197</b><span>growth</span></div>
+        <div class="tier"><b>$359</b><span>scale</span></div>
+      </div>
+      <p class="price">Tiers differ in credits + overseer level only<span>Never in capability access — every tier gets the same capabilities.</span></p>
+    </div>
+
+    <div class="card">
+      <span class="tag muted">Full stack</span>
+      <h2>Full Stack — all 8 capabilities</h2>
+      <p class="for">Everything SFB builds, in one system.</p>
+      <ul>
+        <li>AI Presence</li>
+        <li>Outbound / GTM</li>
+        <li>Meta Ads</li>
+        <li>Website</li>
+        <li>CRM + Automations</li>
+        <li>Chat &amp; Texting</li>
+        <li>Reviews &amp; Reputation</li>
+        <li>SOPs</li>
+      </ul>
+      <p class="price">Pricing on your discovery call<span>No capability ships until a pilot client has used it — roofing pilot first.</span></p>
+    </div>
+  </div>
+
+  <div class="gifts">
+    <h2>Free gifts — yours when you book</h2>
+    <ul>
+      <li><b>Free missed-call audit</b> — how many calls you missed, and what those missed calls cost.</li>
+      <li><b>Free 30-minute discovery call</b> — the audit + scope, on the call.</li>
+      <li><b>Free scope doc</b> — a written scope of what we'd build for you, after the call.</li>
+      <li><b>VSL</b> — our short video on what we do, sent on request.</li>
+    </ul>
+  </div>
+
+  <div class="foot">
+    <a class="btn" href="https://cal.com/roman-royce/30min">Book your free discovery call</a>
+    <p>Six Figure Blueprints &middot; SFB Connect &middot; (239) 349-9491 &middot; <a href="https://sixfigureblueprints.com/salesteam">Team dashboard</a></p>
+  </div>
+</div>
+</body>
+</html>

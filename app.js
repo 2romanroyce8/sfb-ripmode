@@ -21,6 +21,10 @@ const GV_NUMBER = "(213) 495-3536";
    pressed — the dashboard never depends on the CDN to render. */
 const TWILIO_SDK_URL = "https://cdn.jsdelivr.net/npm/@twilio/voice-sdk@2.19.0/dist/twilio.min.js";
 const CAL_LINK = "https://cal.com/roman-royce/30min";
+// Public Packages page (2026-11-23, v28): the 4 packages + offer + free
+// gifts, from the Offer Pack SOP §1-3. Sent with every booked call (SMS +
+// E1 email) so the prospect sees what SFB sells. No auth on the page.
+const PACKAGES_LINK = "https://sixfigureblueprints.com/salesteam/packages";
 const ALLOWED_USERS = ["romanroyce", "loganwells", "braylengarrett"];
 
 /* Token storage: "Remember me" (checked) = 30-day localStorage session;
@@ -592,7 +596,11 @@ function syncCallUI() {
   const btn = $("#call-btn");
   if (btn) {
     const active = callState !== "idle";
-    btn.textContent = active ? "END CALL" : "CALL";
+    // v28: the label lives in #call-btn-label (the button holds the iOS
+    // phone icon); fall back to the button text for any older markup.
+    const lbl = $("#call-btn-label");
+    if (lbl) lbl.textContent = active ? "END CALL" : "CALL";
+    else btn.textContent = active ? "END CALL" : "CALL";
     btn.classList.toggle("end", active);
     // A cap hit disables CALL (lead calls) — the server is still the
     // authority; this is only the visible half. END CALL stays enabled.
@@ -884,7 +892,14 @@ function syncMuteUI() {
   const pill = $("#live-pill");
   if (pill) pill.textContent = muted ? "MUTED" : "LIVE";
   const btn = $("#mute-btn");
-  if (btn) btn.textContent = muted ? "UNMUTE" : "MUTE";
+  if (btn) {
+    // v28: the label lives in #mute-btn-label (the button holds the iOS
+    // icon); fall back to the button text for any older markup.
+    const lbl = $("#mute-btn-label");
+    if (lbl) lbl.textContent = muted ? "Unmute" : "Mute";
+    else btn.textContent = muted ? "UNMUTE" : "MUTE";
+    btn.classList.toggle("is-muted", muted);
+  }
 }
 function toggleMute() {
   muted = !muted;
@@ -958,6 +973,7 @@ const TAB_META = {
   assignments: ["Assignments", "Who's doing what, and by when."],
   announcements: ["Announcements", "Team-wide notes from the owner."],
   today: ["Today's Tasks", "Due today and overdue — yours first."],
+  timeclock: ["Time Clock", "Clock in and out — your hours and the team's, all in ET."],
   connections: ["Connections", "Honest status — nothing here is marked connected unless it was verified."],
 };
 function updateNav() {
@@ -989,7 +1005,7 @@ function onNavigate(next) {
   if (next === "analytics") loadAnalytics(); // reloads state + receptionist calls, then re-renders
   if (next === "dashboard") { loadState().then(() => { if (currentTab === "dashboard") render(); }).catch(() => {}); }
   if (next === "email") loadEmailStatus(); // loads Resend connection state + fresh state, then re-renders
-  if (next === "assignments" || next === "announcements" || next === "today") { loadState().then(() => { if (currentTab === next) render(); }).catch(() => {}); }
+  if (next === "assignments" || next === "announcements" || next === "today" || next === "timeclock") { loadState().then(() => { if (currentTab === next) render(); }).catch(() => {}); }
   render();
 }
 function setMenuOpen(open) {
@@ -1190,6 +1206,7 @@ function render() {
   else if (currentTab === "assignments") body = renderAssignments();
   else if (currentTab === "announcements") body = renderAnnouncements();
   else if (currentTab === "today") body = renderToday();
+  else if (currentTab === "timeclock") body = renderTimeClock();
   else if (currentTab === "connections") body = renderConnections();
   // v27: in sample mode the Dashboard heading is just "Dashboard" (no
   // eyebrow, no subtitle) — exactly as the reference shows it. The
@@ -1217,44 +1234,71 @@ function renderRip() {
   // same as the old dialer card, so bindRip / syncCallUI keep working
   // untouched. The business name is SMALL here — the lead card keeps the
   // full details (dedupe: no full-size name heading in both cards).
+  // iOS Phone in-call screen (2026-11-23, v28): the dialer interior is
+  // rebuilt to look like the real iOS Phone app — contact name + number
+  // up top with the live status/timer under it, a 3-column grid of
+  // circular translucent action buttons (icon + label), the big green
+  // Call circle before dialing / red End circle during a call, and the
+  // Dynamic Island + status bar kept by iphoneChrome. Every control ID
+  // is unchanged, so bindRip / syncCallUI / syncMuteUI keep working —
+  // only the look changed. The mic bar, LIVE indicator, READY state,
+  // keypad, script and TEXT composer all still live inside the phone.
   const dialerInner = `
-      <div class="iphone-dialer">
-        <div class="lead-line"><b>${esc(lead.business)}</b> · <span style="color:#98989d;font-size:13px">Ready to dial</span></div>
-        <div class="mic-wrap">
-          <span class="pill" id="call-pill"><svg class="call-ico" viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M22 16.92v3a2 2 0 0 1-2.18 2 19.79 19.79 0 0 1-8.63-3.07 19.5 19.5 0 0 1-6-6 19.79 19.79 0 0 1-3.07-8.67A2 2 0 0 1 4.11 2h3a2 2 0 0 1 2 1.72c.127.96.361 1.903.7 2.81a2 2 0 0 1-.45 2.11L8.09 9.91a16 16 0 0 0 6 6l1.27-1.27a2 2 0 0 1 2.11-.45c.907.339 1.85.573 2.81.7A2 2 0 0 1 22 16.92z"/></svg><span id="call-state">${esc(callStateLabel(callState, callElapsed()))}</span></span>
+      <div class="iphone-dialer ios-dialer">
+        <div class="ios-contact">
+          <div class="ios-name">${esc(lead.business)}</div>
+          <div class="ios-number">${esc(lead.phone)}</div>
+          <div class="ios-status" id="call-state">${esc(callStateLabel(callState, callElapsed()))}</div>
+        </div>
+        <div class="ios-microw">
           <div class="mic-bar"><div class="mic-fill" id="mic-fill" style="width:${micLevel}%"></div></div>
           <span class="pill" id="live-pill">${muted ? "MUTED" : "LIVE"}</span>
         </div>
-        <div class="lead-line" style="font-size:26px;font-weight:800">${esc(lead.phone)}</div>
         <div id="call-status-line" class="${callStatusLine() ? "notice" : "hidden"}" style="margin-top:6px">${esc(callStatusLine())}</div>
-        <div class="ready-row" style="margin-top:10px">
-          <button class="btn btn--primary" id="ready-btn" style="flex:1;padding:12px">READY</button>
-          <span class="pill on" id="ready-state">${readyOn ? "Ready" : "Not ready"}</span>
+        <div class="ios-grid">
+          <button class="ios-action${muted ? " is-muted" : ""}" id="mute-btn" type="button">
+            <span class="ios-action-circle"><svg viewBox="0 0 24 24" width="26" height="26" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M12 1a3 3 0 0 0-3 3v8a3 3 0 0 0 6 0V4a3 3 0 0 0-3-3z"/><path d="M19 10v2a7 7 0 0 1-14 0v-2"/><line x1="12" y1="19" x2="12" y2="23"/><line x1="8" y1="23" x2="16" y2="23"/></svg><svg class="ios-mute-slash" viewBox="0 0 24 24" width="26" height="26" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" aria-hidden="true"><line x1="4" y1="4" x2="20" y2="20"/></svg></span>
+            <span class="ios-action-label" id="mute-btn-label">${muted ? "Unmute" : "Mute"}</span>
+          </button>
+          <button class="ios-action" id="keypad-btn" type="button">
+            <span class="ios-action-circle"><svg viewBox="0 0 24 24" width="26" height="26" fill="currentColor" aria-hidden="true"><circle cx="6" cy="6" r="1.7"/><circle cx="12" cy="6" r="1.7"/><circle cx="18" cy="6" r="1.7"/><circle cx="6" cy="12" r="1.7"/><circle cx="12" cy="12" r="1.7"/><circle cx="18" cy="12" r="1.7"/><circle cx="6" cy="18" r="1.7"/><circle cx="12" cy="18" r="1.7"/><circle cx="18" cy="18" r="1.7"/></svg></span>
+            <span class="ios-action-label">Keypad</span>
+          </button>
+          <button class="ios-action" id="script-btn" type="button">
+            <span class="ios-action-circle"><svg viewBox="0 0 24 24" width="26" height="26" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/><polyline points="14 2 14 8 20 8"/><line x1="16" y1="13" x2="8" y2="13"/><line x1="16" y1="17" x2="8" y2="17"/></svg></span>
+            <span class="ios-action-label">Script</span>
+          </button>
+          <button class="ios-action" id="dropvm-btn" type="button">
+            <span class="ios-action-circle"><svg viewBox="0 0 24 24" width="26" height="26" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><rect x="2" y="5" width="20" height="14" rx="2"/><circle cx="8.5" cy="12" r="2.5"/><circle cx="15.5" cy="12" r="2.5"/></svg></span>
+            <span class="ios-action-label">Drop VM</span>
+          </button>
+          <button class="ios-action" id="text-btn" type="button" ${capsSmsBlockedReason() ? "disabled" : ""}>
+            <span class="ios-action-circle"><svg viewBox="0 0 24 24" width="26" height="26" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M21 11.5a8.38 8.38 0 0 1-.9 3.8 8.5 8.5 0 0 1-7.6 4.7 8.38 8.38 0 0 1-3.8-.9L3 21l1.9-5.7a8.38 8.38 0 0 1-.9-3.8 8.5 8.5 0 0 1 4.7-7.6 8.38 8.38 0 0 1 3.8-.9h.5a8.48 8.48 0 0 1 8 8v.5z"/></svg></span>
+            <span class="ios-action-label">Text</span>
+          </button>
         </div>
-        <div style="display:flex;gap:8px">
-          <button class="btn" id="mute-btn" style="flex:1">${muted ? "UNMUTE" : "MUTE"}</button>
-          <button class="btn" id="keypad-btn" style="flex:1">KEYPAD</button>
-        </div>
-        <div style="display:flex;gap:8px;margin-top:8px">
-          <button class="btn" id="script-btn" style="flex:1">SCRIPT</button>
-          <button class="btn" id="dropvm-btn" style="flex:1">DROP VM</button>
-        </div>
+        ${capsSmsBlockedReason() ? `<div class="error" style="margin-top:8px">${esc(capsSmsBlockedReason())}</div>` : ""}
         <div id="script-box" class="hidden" style="margin-top:10px">
           <div class="field"><label>${esc(script.title)}</label>
           <textarea class="input" readonly rows="5">${esc(script.body)}</textarea></div>
           <p class="notice">Read it yourself on the call — the script is not played automatically.</p>
         </div>
         <div id="keypad-box" class="hidden" style="margin-top:10px">
-          <div class="slots">${["1","2","3","4","5","6","7","8","9","*","0","#"].map((k) => `<button class="slot" data-key="${k}">${k}</button>`).join("")}</div>
+          <div class="slots">${[["1",""],["2","ABC"],["3","DEF"],["4","GHI"],["5","JKL"],["6","MNO"],["7","PQRS"],["8","TUV"],["9","WXYZ"],["*",""],["0","+"],["#",""]].map(([k, l]) => `<button class="slot" data-key="${k}"><span class="slot-digit">${k}</span>${l ? `<span class="slot-letters">${l}</span>` : ""}</button>`).join("")}</div>
         </div>
-        <button class="big-call${callState !== "idle" ? " end" : ""}" id="call-btn" ${callState === "idle" && capsBlockedReason() ? "disabled" : ""}>${callState !== "idle" ? "END CALL" : "CALL"}</button>
+        <button class="ios-end${callState !== "idle" ? " end" : ""}" id="call-btn" type="button" ${callState === "idle" && capsBlockedReason() ? "disabled" : ""}>
+          <span class="ios-end-circle"><svg viewBox="0 0 24 24" width="30" height="30" fill="currentColor" aria-hidden="true"><path d="M22 16.92v3a2 2 0 0 1-2.18 2 19.79 19.79 0 0 1-8.63-3.07 19.5 19.5 0 0 1-6-6 19.79 19.79 0 0 1-3.07-8.67A2 2 0 0 1 4.11 2h3a2 2 0 0 1 2 1.72c.127.96.361 1.903.7 2.81a2 2 0 0 1-.45 2.11L8.09 9.91a16 16 0 0 0 6 6l1.27-1.27a2 2 0 0 1 2.11-.45c.907.339 1.85.573 2.81.7A2 2 0 0 1 22 16.92z"/></svg></span>
+          <span class="ios-end-label" id="call-btn-label">${callState !== "idle" ? "END CALL" : "CALL"}</span>
+        </button>
         <div id="caps-block-note" class="${capsBlockedReason() ? "error" : "hidden"}" style="margin-top:8px">${esc(capsBlockedReason())}</div>
-        <button class="btn" id="text-btn" style="width:100%;margin-top:8px;padding:13px" ${capsSmsBlockedReason() ? "disabled" : ""}>TEXT</button>
-        ${capsSmsBlockedReason() ? `<div class="error" style="margin-top:8px">${esc(capsSmsBlockedReason())}</div>` : ""}
+        <div class="ios-ready">
+          <button class="btn btn--primary" id="ready-btn" style="flex:1;padding:10px">READY</button>
+          <span class="pill on" id="ready-state">${readyOn ? "Ready" : "Not ready"}</span>
+        </div>
         ${smsComposerOpen ? smsComposerHtml(lead) : ""}
       </div>`;
   return `
-  ${capsStripCompactHtml()}
+  ${isOwner ? capsStripCompactHtml() : ""}
   <div class="grid2 rip-grid">
     <div class="card rip-compact">
       <div class="lead-line">
@@ -1350,7 +1394,9 @@ function bindRip() {
     // Confirmation text, in-app (2026-11-21): the old flow opened Google
     // Voice. The text now goes through POST /api/sms/send — the toast
     // reports what actually happened, never a claimed send.
-    const text = `Hi, this is Roman from SFB Connect — confirming our meeting. Here is the booking link if you need it: ${CAL_LINK}`;
+    // (2026-11-23, v28): the packages link rides in this SAME single text
+    // — one text, one cap hit. The prospect sees what SFB sells.
+    const text = `Hi, this is Roman from SFB Connect — confirming our meeting. Here is the booking link if you need it: ${CAL_LINK}. Here's what we do for businesses like yours: ${PACKAGES_LINK}`;
     let smsNote;
     try {
       await sendSmsInApp(lead.id, text);
@@ -3004,7 +3050,7 @@ async function loadAnalytics() {
 // [VSL link] in E4 is an editable placeholder, never a guessed URL.
 const EMAIL_TEMPLATES = [
   {id: "e1", name: "Meeting booked confirmation", subject: "Your discovery call is booked — [Business]",
-   body: "Hi [Name],\n\nYou're booked in for a free 30-minute discovery call about [Business].\n\nOn the call we'll run your free audit and put together a scope for what we'd build for you — what it would do, and what it would cost. No obligation.\n\nIf you need to move it, reply to this email or rebook here: [Link]\n\nTalk soon,\nRoman Royce — Six Figure Blueprints"},
+   body: "Hi [Name],\n\nYou're booked in for a free 30-minute discovery call about [Business].\n\nOn the call we'll run your free audit and put together a scope for what we'd build for you — what it would do, and what it would cost. No obligation.\n\nBefore the call, here's what we do for businesses like [Business]: [Packages] — our packages, the free audit, and what's included.\n\nIf you need to move it, reply to this email or rebook here: [Link]\n\nTalk soon,\nRoman Royce — Six Figure Blueprints"},
   {id: "e2", name: "No-answer follow-up", subject: "Missed you — free audit for [Business]",
    body: "Hi [Name],\n\nTried you earlier about [Business] — we help businesses answer every call with AI, so no customer ever gets voicemail again.\n\nI'd like to run a free audit for you: how many calls you're missing, and what those missed calls are costing. It takes 30 minutes and there's no obligation.\n\nBook a time here: [Link]\n\nRoman Royce — Six Figure Blueprints"},
   {id: "e3", name: "Voicemail follow-up", subject: "Left you a voicemail — [Business]",
@@ -3017,7 +3063,9 @@ const EMAIL_TEMPLATES = [
 function mergeEmailTemplate(tpl, lead, dateTime) {
   const name = (lead && (lead.owner || lead.business)) || "";
   const biz = (lead && lead.business) || "";
-  const sub = (s) => String(s || "").split("[Name]").join(name).split("[Business]").join(biz).split("[Link]").join(CAL_LINK).split("[Date/Time]").join(dateTime || "");
+  // [Packages] (2026-11-23, v28): the public Packages page link, merged
+  // into E1 so every booked call's confirmation email carries it.
+  const sub = (s) => String(s || "").split("[Name]").join(name).split("[Business]").join(biz).split("[Link]").join(CAL_LINK).split("[Packages]").join(PACKAGES_LINK).split("[Date/Time]").join(dateTime || "");
   return {subject: sub(tpl.subject), body: sub(tpl.body)};
 }
 let emailConnected = null; // null = unknown, true/false from GET /api/email/status
@@ -3300,6 +3348,194 @@ function bindToday() {
   }; });
 }
 
+/* ---------- Time Clock (2026-11-23, v28) ----------
+   Attendance for the 3-person team. The log starts EMPTY and fills only
+   as people clock in/out — never seeded. Server ops (worker/router.js):
+   clockIn / clockOut (signed-in user only, one active shift), owner-only
+   clockDeleteEvent (soft-delete: the entry stays in the log, marked
+   removed) and clockAddManual (flagged as a manual entry). Shifts are
+   derived from in→out pairs; hours are attributed to the clock-in date;
+   days/weeks use America/New_York boundaries (week = Monday–Sunday).
+   Times display in ET, 12-hour format. This does NOT gate dialing or
+   anything else — logging and visibility only. */
+let tcScope = "team"; // "mine" | "team"
+let tcRange = "today"; // "today" | "week" | "all"
+function tcEvents() { return ((state.timeClock && state.timeClock.events) || []); }
+function tcEtDateOf(iso) {
+  const d = new Date(iso);
+  if (Number.isNaN(d.getTime())) return "";
+  return d.toLocaleDateString("en-CA", { timeZone: "America/New_York" });
+}
+function tcEtToday() { return new Date().toLocaleDateString("en-CA", { timeZone: "America/New_York" }); }
+function tcEtTime(iso) {
+  const d = new Date(iso);
+  if (Number.isNaN(d.getTime())) return "—";
+  return d.toLocaleTimeString("en-US", { timeZone: "America/New_York", hour: "numeric", minute: "2-digit" });
+}
+function tcEtDateLabel(iso) {
+  const d = new Date(iso);
+  if (Number.isNaN(d.getTime())) return "—";
+  return d.toLocaleDateString("en-US", { timeZone: "America/New_York", month: "short", day: "numeric", year: "numeric" });
+}
+function tcWeekMonday(etDate) {
+  const parts = String(etDate || "").split("-").map(Number);
+  if (parts.length !== 3 || parts.some((n) => !Number.isFinite(n))) return "";
+  const d = new Date(Date.UTC(parts[0], parts[1] - 1, parts[2], 12, 0, 0));
+  const back = (d.getUTCDay() + 6) % 7; // days since Monday
+  d.setUTCDate(d.getUTCDate() - back);
+  return d.toISOString().slice(0, 10);
+}
+function tcUserEvents(events, username) {
+  return (events || []).filter((e) => e && e.username === username && !e.deleted).slice()
+    .sort((a, b) => String(a.at).localeCompare(String(b.at)));
+}
+function tcOpenShiftFor(username) {
+  const mine = tcUserEvents(tcEvents(), username);
+  const last = mine[mine.length - 1];
+  return last && last.type === "in" ? last : null;
+}
+// Derived shifts: [{inEv, outEv|null, hours}] — an open shift counts the
+// elapsed time up to now. Hours are attributed to the clock-in date.
+function tcShiftsFor(username) {
+  const shifts = [];
+  let open = null;
+  for (const e of tcUserEvents(tcEvents(), username)) {
+    if (e.type === "in") {
+      if (open) shifts.push({ inEv: open, outEv: null, hours: 0 });
+      open = e;
+    } else if (e.type === "out" && open) {
+      const hrs = (Date.parse(e.at) - Date.parse(open.at)) / 3600000;
+      shifts.push({ inEv: open, outEv: e, hours: Math.max(0, hrs) });
+      open = null;
+    }
+  }
+  if (open) shifts.push({ inEv: open, outEv: null, hours: Math.max(0, (Date.now() - Date.parse(open.at)) / 3600000) });
+  return shifts;
+}
+function tcHoursFor(username, range) {
+  const today = tcEtToday();
+  const monday = tcWeekMonday(today);
+  let total = 0;
+  for (const s of tcShiftsFor(username)) {
+    const d = s.inEv.date || tcEtDateOf(s.inEv.at);
+    if (range === "today" && d !== today) continue;
+    if (range === "week" && tcWeekMonday(d) !== monday) continue;
+    total += s.hours;
+  }
+  return total;
+}
+function tcFmtHours(h) {
+  const mins = Math.max(0, Math.round(h * 60));
+  return Math.floor(mins / 60) + "h " + String(mins % 60).padStart(2, "0") + "m";
+}
+function renderTimeClock() {
+  const isOwner = roleFor(me) === "owner";
+  const open = tcOpenShiftFor(me);
+  const today = tcEtToday();
+  const monday = tcWeekMonday(today);
+  const inRange = (d) => tcRange === "all" ? true : tcRange === "today" ? d === today : tcWeekMonday(d) === monday;
+  const users = tcScope === "mine" ? [me] : ALLOWED_USERS;
+  const board = ALLOWED_USERS.map((u) => {
+    const o = tcOpenShiftFor(u);
+    return `<div class="card tc-member"><div><b>${esc(DISPLAY_NAMES[u] || u)}</b>
+      <span style="color:var(--muted);font-size:13px;display:block">${o ? "Clocked in since " + esc(tcEtTime(o.at)) : "Clocked out"}</span></div>
+      <div style="text-align:right"><span class="tc-dot${o ? " tc-dot--in" : ""}"></span>
+      <span style="font-size:13px;color:var(--muted)">Today ${esc(tcFmtHours(tcHoursFor(u, "today")))}</span></div></div>`;
+  }).join("");
+  let rows = [];
+  for (const u of users) {
+    for (const s of tcShiftsFor(u)) {
+      const d = s.inEv.date || tcEtDateOf(s.inEv.at);
+      if (!inRange(d)) continue;
+      rows.push({ kind: "shift", key: s.inEv.at, date: d, user: u, shift: s });
+    }
+  }
+  for (const e of tcEvents()) {
+    if (!e.deleted || !users.includes(e.username)) continue;
+    const d = e.date || tcEtDateOf(e.at);
+    if (!inRange(d)) continue;
+    rows.push({ kind: "removed", key: e.at, date: d, user: e.username, ev: e });
+  }
+  rows.sort((a, b) => String(b.key).localeCompare(String(a.key)));
+  const delBtn = (ev) => isOwner ? ` <button class="btn tc-del" type="button" data-tc-del="${ev.id}" data-tc-del-label="${esc((ev.type === "in" ? "Clock in " : "Clock out ") + tcEtTime(ev.at))}" aria-label="Remove this clock entry">×</button>` : "";
+  const rowHtml = rows.map((r) => {
+    if (r.kind === "removed") {
+      const e = r.ev;
+      return `<tr class="tc-row--removed"><td>${esc(tcEtDateLabel(e.at))}</td><td>${esc(DISPLAY_NAMES[e.username] || e.username)}</td>
+        <td>${e.type === "in" ? esc(tcEtTime(e.at)) : "—"}</td><td>${e.type === "out" ? esc(tcEtTime(e.at)) : "—"}</td>
+        <td>—</td><td>Removed${e.deletedNote ? " — " + esc(e.deletedNote) : ""}${e.manual ? " · Manual" : ""}</td></tr>`;
+    }
+    const s = r.shift;
+    const manual = s.inEv.manual || (s.outEv && s.outEv.manual);
+    const note = (s.inEv.note || (s.outEv && s.outEv.note) || "");
+    return `<tr class="${s.outEv ? "" : "tc-row--open"}"><td>${esc(tcEtDateLabel(s.inEv.at))}</td><td>${esc(DISPLAY_NAMES[r.user] || r.user)}</td>
+      <td>${esc(tcEtTime(s.inEv.at))}${delBtn(s.inEv)}</td>
+      <td>${s.outEv ? esc(tcEtTime(s.outEv.at)) + delBtn(s.outEv) : "—"}</td>
+      <td>${esc(tcFmtHours(s.hours))}</td>
+      <td>${s.outEv ? "Closed" : "Open"}${manual ? " · Manual" : ""}${note ? " — " + esc(note) : ""}</td></tr>`;
+  }).join("");
+  return `
+  <div class="card tc-status">
+    <div class="section-title" style="margin-top:0">Your status</div>
+    <p style="margin:4px 0 0;font-size:15px">${open ? "You're clocked in since <b>" + esc(tcEtTime(open.at)) + "</b>." : "You're clocked out."}</p>
+    <p style="margin:6px 0 0;color:var(--muted);font-size:13px">Today ${esc(tcFmtHours(tcHoursFor(me, "today")))} · This week ${esc(tcFmtHours(tcHoursFor(me, "week")))} · All times ET</p>
+    <button class="btn ${open ? "btn-danger" : "btn-green"}" id="tc-clock-btn" type="button" style="width:100%;padding:14px;font-size:16px;margin-top:14px">${open ? "CLOCK OUT" : "CLOCK IN"}</button>
+  </div>
+  <div class="section-title" style="margin-top:18px">Team status</div>
+  <div class="tc-board">${board}</div>
+  <div class="card" style="margin-top:18px"><div class="seg-toggle" role="tablist" aria-label="Whose hours">
+    <button type="button" class="${tcScope === "mine" ? "seg-on" : ""}" data-tc-scope="mine">Mine</button>
+    <button type="button" class="${tcScope === "team" ? "seg-on" : ""}" data-tc-scope="team">Team</button>
+  </div>
+  <div class="seg-toggle" role="tablist" aria-label="Date range" style="margin-top:8px">
+    <button type="button" class="${tcRange === "today" ? "seg-on" : ""}" data-tc-range="today">Today</button>
+    <button type="button" class="${tcRange === "week" ? "seg-on" : ""}" data-tc-range="week">This week</button>
+    <button type="button" class="${tcRange === "all" ? "seg-on" : ""}" data-tc-range="all">All</button>
+  </div>
+  ${rows.length ? `<table class="tc-table"><thead><tr><th>Date</th><th>Member</th><th>In</th><th>Out</th><th>Hours</th><th>Status</th></tr></thead><tbody>${rowHtml}</tbody></table>`
+    : `<p class="notice">No clock entries yet — the log fills as the team clocks in and out.</p>`}
+  </div>
+  ${isOwner ? `<div class="card" style="margin-top:18px"><div class="section-title" style="margin-top:0">Add a manual entry — owner only</div>
+    <p class="hint-line">For a missed clock-in or clock-out. It shows in the log as a manual entry.</p>
+    <div style="display:flex;gap:8px;flex-wrap:wrap">
+      <select class="select" id="tc-manual-user">${ALLOWED_USERS.map((u) => `<option value="${u}">${esc(DISPLAY_NAMES[u] || u)}</option>`).join("")}</select>
+      <select class="select" id="tc-manual-type"><option value="in">Clock in</option><option value="out">Clock out</option></select>
+      <input class="input" id="tc-manual-date" type="date" value="${tcEtToday()}" style="max-width:170px">
+      <input class="input" id="tc-manual-time" type="time" style="max-width:130px">
+      <input class="input" id="tc-manual-note" type="text" placeholder="Note (e.g. forgot to clock in)" style="flex:1;min-width:180px">
+      <button class="btn" id="tc-manual-add" type="button">Add entry</button>
+    </div></div>` : ""}`;
+}
+function bindTimeClock() {
+  const btn = $("#tc-clock-btn");
+  if (btn) btn.onclick = async () => {
+    const open = tcOpenShiftFor(me);
+    try { await mutate(open ? "clockOut" : "clockIn", {}); }
+    catch (e) { showToast((open ? "Clock out failed — " : "Clock in failed — ") + (e.message || "try again.")); }
+  };
+  document.querySelectorAll("[data-tc-scope]").forEach((b) => { b.onclick = () => { tcScope = b.dataset.tcScope; render(); }; });
+  document.querySelectorAll("[data-tc-range]").forEach((b) => { b.onclick = () => { tcRange = b.dataset.tcRange; render(); }; });
+  document.querySelectorAll("[data-tc-del]").forEach((b) => { b.onclick = () => {
+    const ev = tcEvents().find((x) => x.id === b.dataset.tcDel);
+    confirmAction({ title: "Remove this clock entry?", body: ev ? (DISPLAY_NAMES[ev.username] || ev.username) + " — " + (ev.type === "in" ? "Clock in " : "Clock out ") + tcEtTime(ev.at) : "",
+      confirmLabel: "Remove entry",
+      onConfirm: async () => { try { await mutate("clockDeleteEvent", { id: b.dataset.tcDel, confirmed: true }); } catch (e) { showToast("Remove failed — " + (e.message || "try again.")); } } });
+  }; });
+  const addBtn = $("#tc-manual-add");
+  if (addBtn) addBtn.onclick = async () => {
+    const user = $("#tc-manual-user").value;
+    const type = $("#tc-manual-type").value;
+    const dateVal = $("#tc-manual-date").value;
+    const timeVal = $("#tc-manual-time").value;
+    const note = $("#tc-manual-note").value.trim();
+    if (!dateVal || !timeVal) { showToast("Pick a date and a time for the entry."); return; }
+    const parsed = Date.parse(dateVal + "T" + timeVal + ":00");
+    if (Number.isNaN(parsed)) { showToast("That date and time don't work — check them and try again."); return; }
+    try { await mutate("clockAddManual", { username: user, type, at: new Date(parsed).toISOString(), note }); }
+    catch (e) { showToast("Entry not added — " + (e.message || "try again.")); }
+  };
+}
+
 /* Generic confirm modal — same overlay id/classes as the lead-delete
    safeguard (the harness expects #delete-confirm). Cancel, Escape, or the
    backdrop closes it and does nothing. */
@@ -3387,6 +3623,7 @@ function bindTab() {
   else if (currentTab === "assignments") bindAssignments();
   else if (currentTab === "announcements") bindAnnouncements();
   else if (currentTab === "today") bindToday();
+  else if (currentTab === "timeclock") bindTimeClock();
 }
 
 /* ---------- login submit: NO <form> (2026-11-20) ----------

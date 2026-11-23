@@ -206,6 +206,12 @@ function seedState() {
     teamChat: { messages: [] },
     assignments: [],
     announcements: [],
+    // Time Clock (2026-11-23, v28): attendance for the 3-person team.
+    // Starts EMPTY — never seeded. Events: {id, username, type: "in"|"out",
+    // at: ISO timestamp, date: ET YYYY-MM-DD, note, manual, addedBy,
+    // deleted, deletedBy, deletedNote}. Shifts are derived from in→out
+    // pairs; an open shift has no out yet.
+    timeClock: { events: [] },
     emailTemplates: [],
     emailLog: [],
     meetings: [],
@@ -230,6 +236,65 @@ async function getState(env) {
 }
 async function saveState(env, s) {
   await env.RIPMODE_KV.put("state", JSON.stringify(s));
+}
+
+// ---- Time Clock (2026-11-23, v28) ----
+// Attendance for the 3-person team. Events live in state.timeClock.events:
+// {id, username, type: "in"|"out", at: ISO timestamp, date: ET YYYY-MM-DD,
+//  note, manual, addedBy, deleted, deletedBy, deletedNote}.
+// The log starts EMPTY and fills only as people clock in/out — never seeded.
+// Shifts are derived from in→out pairs (chronological by `at`); an open
+// shift has no out yet. Hours are attributed to the clock-in date; days
+// and weeks use America/New_York boundaries (week = Monday–Sunday).
+function tcEnsure(s) {
+  if (!s.timeClock || !Array.isArray(s.timeClock.events)) s.timeClock = { events: [] };
+  return s.timeClock;
+}
+function tcEtDateOf(iso) {
+  const d = new Date(iso);
+  if (Number.isNaN(d.getTime())) return "";
+  return d.toLocaleDateString("en-CA", { timeZone: "America/New_York" });
+}
+// Monday (YYYY-MM-DD) of the ET week containing the given ET date.
+function tcWeekMonday(etDate) {
+  const parts = String(etDate || "").split("-").map(Number);
+  if (parts.length !== 3 || parts.some((n) => !Number.isFinite(n))) return "";
+  const d = new Date(Date.UTC(parts[0], parts[1] - 1, parts[2], 12, 0, 0));
+  const back = (d.getUTCDay() + 6) % 7; // days since Monday
+  d.setUTCDate(d.getUTCDate() - back);
+  return d.toISOString().slice(0, 10);
+}
+function tcUserEvents(events, username) {
+  return (events || [])
+    .filter((e) => e && e.username === username && !e.deleted)
+    .slice()
+    .sort((a, b) => String(a.at).localeCompare(String(b.at)));
+}
+// The open shift for a user: the latest non-deleted event by `at` is an "in".
+function tcOpenShift(events, username) {
+  const mine = tcUserEvents(events, username);
+  const last = mine[mine.length - 1];
+  return last && last.type === "in" ? last : null;
+}
+// Derived shifts for a user: [{in, out|null, hours}] in chronological order.
+function tcShifts(events, username) {
+  const shifts = [];
+  let open = null;
+  for (const e of tcUserEvents(events, username)) {
+    if (e.type === "in") {
+      if (open) shifts.push({ in: open, out: null, hours: 0 }); // overlapping in: keep the old one open
+      open = e;
+    } else if (e.type === "out") {
+      if (open) {
+        const hrs = (Date.parse(e.at) - Date.parse(open.at)) / 3600000;
+        shifts.push({ in: open, out: e, hours: Math.max(0, hrs) });
+        open = null;
+      }
+      // stray "out" with no open shift: ignored for hours (never crashes)
+    }
+  }
+  if (open) shifts.push({ in: open, out: null, hours: 0 });
+  return shifts;
 }
 
 async function requireSession(env, request) {
@@ -971,10 +1036,20 @@ async function handleApi(request, env) {
     const s = await getState(env);
     // Defensive init (2026-11-21): states saved before the new keys
     // existed get them as empty arrays instead of crashing on .push.
+    // (v28: followUps/meetings/callLogs/conversations/scripts/campaigns
+    // were missing too — bookMeeting pushes followUps, so a state without
+    // it crashed the booking flow with a 500.)
     if (!Array.isArray(s.assignments)) s.assignments = [];
     if (!Array.isArray(s.announcements)) s.announcements = [];
     if (!Array.isArray(s.emailTemplates)) s.emailTemplates = [];
     if (!Array.isArray(s.emailLog)) s.emailLog = [];
+    if (!Array.isArray(s.followUps)) s.followUps = [];
+    if (!Array.isArray(s.meetings)) s.meetings = [];
+    if (!Array.isArray(s.callLogs)) s.callLogs = [];
+    if (!Array.isArray(s.conversations)) s.conversations = [];
+    if (!Array.isArray(s.scripts)) s.scripts = [];
+    if (!Array.isArray(s.campaigns)) s.campaigns = [];
+    if (!s.timeClock || !Array.isArray(s.timeClock.events)) s.timeClock = { events: [] };
     if (!s.teamChat || !Array.isArray(s.teamChat.messages)) s.teamChat = { messages: [] };
     const now = new Date();
     const date = now.toLocaleDateString("en-US", { month: "short", day: "numeric", year: "numeric" });
@@ -1028,8 +1103,54 @@ async function handleApi(request, env) {
       s.sessionStats.meetings = (s.sessionStats.meetings || 0) + 1;
       if (l && l.stage === "New") l.stage = "In conversation";
       s.callLogs.push({ id: "call-" + crypto.randomUUID().slice(0, 8), leadId: body.leadId, leadName: l ? l.business : "", outcome: "meeting_booked", date, time, by: username });
-      s.followUps.push({ id: "fu-" + crypto.randomUUID().slice(0, 8), leadId: body.leadId, kind: "email", status: "queued", note: "Meeting confirmation email — queued until Resend is wired.", date, time });
-      s.followUps.push({ id: "fu-" + crypto.randomUUID().slice(0, 8), leadId: body.leadId, kind: "sms", status: "pending", note: "Meeting confirmation SMS — sent in-app from the dialer after booking.", date, time });
+      s.followUps.push({ id: "fu-" + crypto.randomUUID().slice(0, 8), leadId: body.leadId, kind: "email", status: "queued", note: "Meeting confirmation email with packages link — queued until Resend is wired.", date, time });
+      s.followUps.push({ id: "fu-" + crypto.randomUUID().slice(0, 8), leadId: body.leadId, kind: "sms", status: "pending", note: "Meeting confirmation SMS with packages link — sent in-app from the dialer after booking.", date, time });
+    } else if (op === "clockIn" || op === "clockOut") {
+      // Time Clock (2026-11-23, v28): attendance for the signed-in user
+      // ONLY — nobody clocks anyone else in or out (username comes from
+      // the session, never from the request body). One active shift per
+      // user: clocking in while clocked in, or out while clocked out, is
+      // refused with a clear message. This does NOT gate dialing or
+      // anything else — logging and visibility only.
+      const tc = tcEnsure(s);
+      const at = new Date().toISOString();
+      if (op === "clockIn") {
+        if (tcOpenShift(tc.events, username)) return err("You're already clocked in — clock out first.", 400);
+        tc.events.push({ id: "tc-" + crypto.randomUUID().slice(0, 8), username, type: "in", at, date: tcEtDateOf(at), note: "", manual: false, addedBy: "", deleted: false, deletedBy: "", deletedNote: "" });
+      } else {
+        if (!tcOpenShift(tc.events, username)) return err("You're not clocked in — clock in first.", 400);
+        tc.events.push({ id: "tc-" + crypto.randomUUID().slice(0, 8), username, type: "out", at, date: tcEtDateOf(at), note: "", manual: false, addedBy: "", deleted: false, deletedBy: "", deletedNote: "" });
+      }
+    } else if (op === "clockDeleteEvent") {
+      // Owner-only correction: soft-delete a bad clock event. The event
+      // stays in the log, marked as removed with the owner's note — never
+      // silently rewritten — and stops counting toward hours.
+      if (username !== "romanroyce") return err("Only the owner can correct time clock entries.", 403);
+      if (body.confirmed !== true) return err("Delete not confirmed — send confirmed:true.", 400);
+      const tc = tcEnsure(s);
+      const ev = tc.events.find((x) => x.id === body.id);
+      if (!ev) return err("Clock event not found.", 400);
+      if (ev.deleted) return err("That clock event is already removed.", 400);
+      ev.deleted = true;
+      ev.deletedBy = username;
+      ev.deletedNote = String(body.note || "").slice(0, 200);
+    } else if (op === "clockAddManual") {
+      // Owner-only correction: add a manual clock event for any member,
+      // with a short note. Recorded as a manual entry in the log. The
+      // one-active-shift rule applies here too, so a manual add can never
+      // corrupt the shift pairing.
+      if (username !== "romanroyce") return err("Only the owner can correct time clock entries.", 403);
+      const who = String(body.username || "");
+      if (!ALLOWED_USERS.includes(who)) return err("Member must be a team member.", 400);
+      const type = String(body.type || "");
+      if (type !== "in" && type !== "out") return err("Type must be in or out.", 400);
+      const atMs = Date.parse(String(body.at || ""));
+      if (Number.isNaN(atMs)) return err("Enter a valid date and time.", 400);
+      const at = new Date(atMs).toISOString();
+      const tc = tcEnsure(s);
+      if (type === "in" && tcOpenShift(tc.events, who)) return err("That member is already clocked in — clock them out first.", 400);
+      if (type === "out" && !tcOpenShift(tc.events, who)) return err("That member is not clocked in — nothing to close.", 400);
+      tc.events.push({ id: "tc-" + crypto.randomUUID().slice(0, 8), username: who, type, at, date: tcEtDateOf(at), note: String(body.note || "").slice(0, 200), manual: true, addedBy: username, deleted: false, deletedBy: "", deletedNote: "" });
     } else if (op === "addMessage") {
       // leadName stored on the conversation (delete safeguard, 2026-11-21)
       // so a deleted lead's thread stays readable; backfilled for older

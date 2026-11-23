@@ -29,6 +29,9 @@ files = {
     "index.html": (ROOT / "index.html").read_text(),
     "app.js": (ROOT / "app.js").read_text(),
     "style.css": (ROOT / "style.css").read_text(),
+    # Public Packages page (2026-11-23, v28): served at /salesteam/packages
+    # with no session — it is a prospect-facing page, not part of the app.
+    "packages.html": (ROOT / "packages.html").read_text(),
 }
 files_line = "const FILES = " + json.dumps(files, ensure_ascii=False) + ";"
 

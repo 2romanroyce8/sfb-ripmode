@@ -4,7 +4,7 @@
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
 <title>RIP MODE — SFB Connect Dialer</title>
-<link rel="stylesheet" href="/ripmode/style.css?v=27">
+<link rel="stylesheet" href="/ripmode/style.css?v=28">
 <style>
 /* Critical fallback: if style.css ever fails to load, the page still renders
    as a dark FULL-SCREEN login — never a plain white unstyled page.
@@ -98,10 +98,12 @@ html:has(.shell[data-appearance="light"]) .brand-logo{filter:invert(1)}
           <button type="button" class="nav-link" data-tab="assignments"><svg width="19" height="19" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><rect x="8" y="2" width="8" height="4" rx="1"/><path d="M16 4h2a2 2 0 0 1 2 2v14a2 2 0 0 1-2 2H6a2 2 0 0 1-2-2V6a2 2 0 0 1 2-2h2"/><path d="m9 14 2 2 4-4"/></svg><span>Assignments</span></button>
           <button type="button" class="nav-link" data-tab="announcements"><svg width="19" height="19" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><path d="m3 11 18-5v12L3 14v-3z"/><path d="M11.6 16.8a3 3 0 1 1-5.8-1.6"/></svg><span>Announcements</span></button>
           <button type="button" class="nav-link" data-tab="today"><svg width="19" height="19" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="3" width="18" height="18" rx="2"/><path d="m9 12 2 2 4-4"/></svg><span>Today's Tasks</span></button>
+          <button type="button" class="nav-link" data-tab="timeclock"><svg width="19" height="19" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="10"/><polyline points="12 6 12 12 16 14"/></svg><span>Time Clock</span></button>
           <p class="nav-label" data-nav-section="system">SYSTEM</p>
           <button type="button" class="nav-link" data-tab="connections"><svg width="19" height="19" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><path d="M12.22 2h-.44a2 2 0 0 0-2 2v.18a2 2 0 0 1-1 1.73l-.43.25a2 2 0 0 1-2 0l-.15-.08a2 2 0 0 0-2.73.73l-.22.38a2 2 0 0 0 .73 2.73l.15.1a2 2 0 0 1 1 1.72v.51a2 2 0 0 1-1 1.74l-.15.09a2 2 0 0 0-.73 2.73l.22.38a2 2 0 0 0 2.73.73l.15-.08a2 2 0 0 1 2 0l.43.25a2 2 0 0 1 1 1.73V20a2 2 0 0 0 2 2h.44a2 2 0 0 0 2-2v-.18a2 2 0 0 1 1-1.73l.43-.25a2 2 0 0 1 2 0l.15.08a2 2 0 0 0 2.73-.73l.22-.39a2 2 0 0 0-.73-2.73l-.15-.08a2 2 0 0 1-1-1.74v-.5a2 2 0 0 1 1-1.74l.15-.09a2 2 0 0 0 .73-2.73l-.22-.38a2 2 0 0 0-2.73-.73l-.15.08a2 2 0 0 1-2 0l-.43-.25a2 2 0 0 1-1-1.73V4a2 2 0 0 0-2-2z"/><circle cx="12" cy="12" r="3"/></svg><span>Connections</span></button>
         </nav>
         <div class="whats-new"><b>What's new?</b><ul>
+          <li>v28 — Packages page sent with every booked call + Time Clock (clock in/out, log, hours)</li>
           <li>v27 — Pixel-match: sample Dashboard now matches the reference (chart, cards, panels)</li>
           <li>v26 — Sample-data preview + live Stripe revenue card</li>
           <li>v25 — New version notice when an update ships</li>
@@ -159,6 +161,6 @@ html:has(.shell[data-appearance="light"]) .brand-logo{filter:invert(1)}
     </div>
   </div>
 </div>
-<script src="/ripmode/app.js?v=27"></script>
+<script src="/ripmode/app.js?v=28"></script>
 </body>
 </html>
