@@ -428,6 +428,19 @@ function leadNameFor(id) {
 }
 function callsFor(leadId) { return (state.callLogs || []).filter((c) => c.leadId === leadId); }
 function convFor(leadId) { return (state.conversations || []).find((c) => c.leadId === leadId); }
+// No-skip rule (2026-11-23, v31 — Rome: reps work leads in order, never
+// skip forward without a call). A lead counts as "called" when it has at
+// least one callLog entry — the dial-only log at call start and the
+// meeting_booked log both count, so pressing CALL and dialing counts.
+// Prev is always allowed; the owner is exempt from everything (also the
+// escape hatch for a lead with no phone number — the owner can tap an
+// outcome and auto-advance past it). Front-end guard only, not a server
+// security boundary.
+function leadCalled(lead) { return (state.callLogs || []).some((c) => c.leadId === lead.id); }
+function skipLocked() {
+  const lead = (state.leads || [])[ripIndex];
+  return !!lead && roleFor(me) !== "owner" && !leadCalled(lead);
+}
 /* ---------- In-app texting (2026-11-21) ----------
    TEXT sends a real SMS from +1 239 349 9491 via POST /api/sms/send.
    A send is stored "sent — delivery not confirmed" (Twilio accept only);
@@ -472,7 +485,7 @@ function smsComposerHtml(lead) {
     </div>
     <textarea class="input" id="sms-input" rows="4" placeholder="Type a text…">${esc(smsDraft)}</textarea>
     <div style="display:flex;gap:8px;margin-top:8px">
-      <button class="btn btn--primary" id="sms-send-btn" style="flex:1" ${smsSending ? "disabled" : ""}>${smsSending ? "Sending…" : "Send text"}</button>
+      <button class="btn btn--primary" id="sms-send-btn" style="flex:1"${smsSending || !clockedIn() ? ` disabled title="${!clockedIn() ? CLOCK_HINT : ""}"` : ""}>${smsSending ? "Sending…" : "Send text"}</button>
       <button class="btn" id="sms-close-btn">Close</button>
     </div>
     ${smsComposerError ? `<div class="error" style="margin-top:8px">${esc(smsComposerError)}</div>` : ""}
@@ -958,6 +971,9 @@ function onNavigate(next) {
   currentTab = next;
   setMenuOpen(false);
   window.scrollTo(0, 0);
+  // Call Log (2026-11-23, v31): nothing is open until the rep taps it —
+  // entering the tab always starts with no conversation selected.
+  if (next === "calllog") activeConv = null;
   // Nav reset (2026-11-21, v23): a typed sidebar-search filter or a
   // scrolled sidebar nav must never hide tabs after a navigation — the
   // v22 filter stayed applied when a tab was clicked, and the nav's own
@@ -1032,6 +1048,16 @@ function sbShowResults() {
 function sbPickLead(id) {
   const idx = (state && state.leads ? state.leads : []).findIndex((l) => l.id === id);
   if (idx < 0) return;
+  // No-skip (2026-11-23, v31): jumping back — or to the same lead — is
+  // always allowed. Jumping forward is allowed only if every lead from
+  // the current one through the one before the target has been called.
+  // The owner is exempt (roleFor check inside skipLocked's spirit — the
+  // owner can move freely, including past a lead with no phone number).
+  if (roleFor(me) !== "owner" && idx > ripIndex) {
+    const leads = state.leads || [];
+    const blocked = leads.slice(ripIndex, idx).some((l) => !leadCalled(l));
+    if (blocked) { showToast("Call the leads in order — you can't skip ahead to lead #" + (idx + 1) + "."); return; }
+  }
   ripIndex = idx; smsComposerOpen = false; smsDraft = ""; smsComposerError = "";
   sidebarSearch.value = ""; filterSidebarNav(""); sbHideResults();
   onNavigate("rip");
@@ -1183,6 +1209,10 @@ function render() {
   // the shell class drives the height/width rules in ripmode.css.
   const shell = $("#shell");
   if (shell) shell.classList.toggle("tab-calllog", currentTab === "calllog");
+  if (shell) shell.classList.toggle("tab-rip", currentTab === "rip");
+  // Top-bar clock chip (2026-11-23, v31): re-rendered with every render,
+  // so the gating flips the moment the clock state changes.
+  syncClockChip();
   bindTab();
 }
 
@@ -1192,34 +1222,40 @@ function renderRip() {
   const lead = leads[ripIndex] || null;
   if (!lead) return `<div class="notice">No leads yet. Add one in the Leads tab.</div>`;
   const isOwner = roleFor(me) === "owner"; // Test call box: owner only — not rendered at all for staff (not hidden with CSS, not in the DOM)
+  // No-skip (v31): staff on an uncalled lead can't move forward — Next,
+  // outcomes and MEETING BOOKED stay disabled until this lead is called.
+  const locked = skipLocked();
+  // Clock-in gate (v31): nobody works off the clock — not even the owner.
+  // CALL, TEXT, Drop VM, outcomes and MEETING BOOKED are disabled while
+  // not clocked in. Prev/Next navigation is viewing — allowed — and the
+  // END button is never disabled (hanging up must always work, even if
+  // the rep clocks out mid-call; the end-of-call log still lands).
+  const clocked = clockedIn();
+  const workDisabled = locked || !clocked;
+  const workTitle = !clocked ? CLOCK_HINT : "Call this lead first — you can't skip ahead.";
   const calls = callsFor(lead.id);
   const last = calls[calls.length - 1];
   const s = state.sessionStats || {};
   const script = (state.scripts && state.scripts[0]) || {title: "Roofer pitch", body: "Hi, this is Roman from SFB Connect — we build AI receptionists for roofers that answer every call, book jobs, and follow up automatically. Got 60 seconds for me to show you what that looks like for your company?"};
-  // Dialer inside the iPhone frame (2026-11-21). Every control ID is the
-  // same as the old dialer card, so bindRip / syncCallUI keep working
-  // untouched. The business name is SMALL here — the lead card keeps the
-  // full details (dedupe: no full-size name heading in both cards).
-  // iOS Phone in-call screen (2026-11-23, v28): the dialer interior is
-  // rebuilt to look like the real iOS Phone app — contact name + number
+  // Dialer inside the iPad frame (2026-11-23, v31): the 390px iPhone
+  // frame is gone — the dialer is now an iPad panel that fills the
+  // content area (camera dot, no Dynamic Island, same iOS language).
+  // Every control ID is the same as the iPhone dialer, so bindRip /
+  // syncCallUI keep working untouched. The business name is SMALL here —
+  // the lead card keeps the full details (dedupe: no full-size name
+  // heading in both cards).
+  // iOS Phone in-call screen (2026-11-23, v28): contact name + number
   // up top with the live status/timer under it, a 3-column grid of
   // circular translucent action buttons (icon + label), the big green
-  // Call circle before dialing / red End circle during a call, and the
-  // Dynamic Island + status bar kept by iphoneChrome. Every control ID
-  // is unchanged, so bindRip / syncCallUI / syncMuteUI keep working —
-  // only the look changed. The mic bar, LIVE indicator, READY state,
-  // keypad, script and TEXT composer all still live inside the phone.
-  // v30: the phone is a flex column — fixed header (contact + status +
-  // READY toggle + mic row) + scrollable content (grid, script/keypad/
-  // SMS panels) + FIXED footer holding Call/End. The v29 sticky rule
-  // could never work (no scrolling ancestor inside the phone screen,
-  // so the End button sat below the fold, clipped and unreachable);
-  // the footer is a plain flex child outside the scroll area, so the
-  // red End button is always visible in every call state, no scrolling.
-  // The READY toggle moved from the bottom pills to the top, next to
-  // the status text — reachable with no scrolling.
+  // Call pill before dialing / red End pill during a call, and the
+  // READY toggle at the top next to the status text (v30). The mic bar,
+  // LIVE indicator, keypad, script and TEXT composer all still live
+  // inside the dialer. The dialer is a flex column — fixed header +
+  // scrollable content (grid, script/keypad/SMS panels) + FIXED footer
+  // holding Call/End — so the End pill is always visible in every call
+  // state, no scrolling.
   const dialerInner = `
-      <div class="iphone-dialer ios-dialer">
+      <div class="ios-dialer">
         <div class="ios-head">
           <div class="ios-contact">
             <div class="ios-name">${esc(lead.business)}</div>
@@ -1249,11 +1285,11 @@ function renderRip() {
             <span class="ios-action-circle"><svg viewBox="0 0 24 24" width="26" height="26" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/><polyline points="14 2 14 8 20 8"/><line x1="16" y1="13" x2="8" y2="13"/><line x1="16" y1="17" x2="8" y2="17"/></svg></span>
             <span class="ios-action-label">Script</span>
           </button>
-          <button class="ios-action" id="dropvm-btn" type="button">
+          <button class="ios-action" id="dropvm-btn" type="button"${!clocked ? ` disabled title="${CLOCK_HINT}"` : ""}>
             <span class="ios-action-circle"><svg viewBox="0 0 24 24" width="26" height="26" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><rect x="2" y="5" width="20" height="14" rx="2"/><circle cx="8.5" cy="12" r="2.5"/><circle cx="15.5" cy="12" r="2.5"/></svg></span>
             <span class="ios-action-label">Drop VM</span>
           </button>
-          <button class="ios-action" id="text-btn" type="button" ${capsSmsBlockedReason() ? "disabled" : ""}>
+          <button class="ios-action" id="text-btn" type="button"${capsSmsBlockedReason() || !clocked ? ` disabled title="${!clocked ? CLOCK_HINT : capsSmsBlockedReason()}"` : ""}>
             <span class="ios-action-circle"><svg viewBox="0 0 24 24" width="26" height="26" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M21 11.5a8.38 8.38 0 0 1-.9 3.8 8.5 8.5 0 0 1-7.6 4.7 8.38 8.38 0 0 1-3.8-.9L3 21l1.9-5.7a8.38 8.38 0 0 1-.9-3.8 8.5 8.5 0 0 1 4.7-7.6 8.38 8.38 0 0 1 3.8-.9h.5a8.48 8.48 0 0 1 8 8v.5z"/></svg></span>
             <span class="ios-action-label">Text</span>
           </button>
@@ -1270,15 +1306,17 @@ function renderRip() {
         ${smsComposerOpen ? smsComposerHtml(lead) : ""}
         </div>
         <div class="ios-footer">
-        <button class="ios-end${callState !== "idle" ? " end" : ""}" id="call-btn" type="button" ${callState === "idle" && capsBlockedReason() ? "disabled" : ""}>
+        <button class="ios-end${callState !== "idle" ? " end" : ""}" id="call-btn" type="button"${callState === "idle" && (capsBlockedReason() || !clocked) ? ` disabled title="${!clocked ? CLOCK_HINT : capsBlockedReason()}"` : ""}>
           <span class="ios-end-circle"><svg viewBox="0 0 24 24" width="30" height="30" fill="currentColor" aria-hidden="true"><path d="M22 16.92v3a2 2 0 0 1-2.18 2 19.79 19.79 0 0 1-8.63-3.07 19.5 19.5 0 0 1-6-6 19.79 19.79 0 0 1-3.07-8.67A2 2 0 0 1 4.11 2h3a2 2 0 0 1 2 1.72c.127.96.361 1.903.7 2.81a2 2 0 0 1-.45 2.11L8.09 9.91a16 16 0 0 0 6 6l1.27-1.27a2 2 0 0 1 2.11-.45c.907.339 1.85.573 2.81.7A2 2 0 0 1 22 16.92z"/></svg></span>
           <span class="ios-end-label" id="call-btn-label">${callState !== "idle" ? "END CALL" : "CALL"}</span>
         </button>
         <div id="caps-block-note" class="${capsBlockedReason() ? "error" : "hidden"}" style="margin-top:8px">${esc(capsBlockedReason())}</div>
+        ${!clocked ? `<div class="error" style="margin-top:8px">${esc(CLOCK_HINT)}</div>` : ""}
         </div>
       </div>`;
   return `
   <div class="grid2 rip-grid">
+    <div class="rip-lead-col">
     <div class="card rip-compact">
       <div class="lead-line">
         <span class="badge">#${ripIndex + 1} / ${leads.length}</span>
@@ -1311,34 +1349,52 @@ function renderRip() {
       </div>
       <div class="section-title">Outcomes</div>
       <div class="dispo-row">
-        <button class="btn" data-dispo="no_answer">No Answer</button>
-        <button class="btn" data-dispo="voicemail">Voicemail</button>
-        <button class="btn" data-dispo="not_interested">Not Interested</button>
-        <button class="btn" data-dispo="callback">Callback</button>
-        <button class="btn" data-dispo="receptionist">Receptionist</button>
-        <button class="btn" data-dispo="send_vsl">Send VSL</button>
+        <button class="btn" data-dispo="no_answer"${workDisabled ? ` disabled title="${workTitle}"` : ""}>No Answer</button>
+        <button class="btn" data-dispo="voicemail"${workDisabled ? ` disabled title="${workTitle}"` : ""}>Voicemail</button>
+        <button class="btn" data-dispo="not_interested"${workDisabled ? ` disabled title="${workTitle}"` : ""}>Not Interested</button>
+        <button class="btn" data-dispo="callback"${workDisabled ? ` disabled title="${workTitle}"` : ""}>Callback</button>
+        <button class="btn" data-dispo="receptionist"${workDisabled ? ` disabled title="${workTitle}"` : ""}>Receptionist</button>
+        <button class="btn" data-dispo="send_vsl"${workDisabled ? ` disabled title="${workTitle}"` : ""}>Send VSL</button>
       </div>
-      <button class="btn btn-green" id="book-meeting-btn" style="width:100%;padding:14px;font-size:16px;margin-top:10px">MEETING BOOKED — CONFIRM + EMAIL + SMS</button>
+      <button class="btn btn-green" id="book-meeting-btn" style="width:100%;padding:14px;font-size:16px;margin-top:10px"${workDisabled ? ` disabled title="${workTitle}"` : ""}>MEETING BOOKED — CONFIRM + EMAIL + SMS</button>
       <p class="hint-line">Confirm books the meeting; email queued (Resend pending), confirmation text sent in-app.</p>
       <div style="display:flex;gap:8px;margin-top:12px">
         <button class="btn" id="prev-lead" ${ripIndex === 0 ? "disabled" : ""}>← Prev lead</button>
-        <button class="btn" id="next-lead" ${ripIndex >= leads.length - 1 ? "disabled" : ""}>Next lead →</button>
+        <button class="btn" id="next-lead" ${ripIndex >= leads.length - 1 || locked ? "disabled" : ""}${locked ? " title=\"Call this lead first — you can't skip ahead.\"" : ""}>Next lead →</button>
       </div>
+      ${isOwner ? "" : `<p class="hint-line">Work leads in order — Next unlocks after you call this lead.</p>`}
+      ${!clocked ? `<p class="hint-line">${esc(CLOCK_HINT)}</p>` : ""}
     </div>
-    <div>
-      ${iphoneChrome(dialerInner, {compact: true, label: "iPhone showing the dialer"})}
       ${briefCardHtml(lead)}
+    </div>
+    <div class="rip-dialer-col">
+      ${ipadChrome(dialerInner, "iPad showing the dialer")}
       ${isOwner ? `
       <div class="card" style="margin-top:12px">
         <div class="section-title" style="margin-top:0">Test call — owner only</div>
         <div style="display:flex;gap:8px">
           <input class="input" id="test-number" type="tel" inputmode="tel" autocomplete="off" placeholder="Enter a number to test-call" value="${esc(testNumberDraft)}" style="flex:1;min-width:0">
-          <button class="btn" id="test-call-btn">${callState !== "idle" && isTestCall ? "END CALL" : "CALL"}</button>
+          <button class="btn" id="test-call-btn"${!clocked ? ` disabled title="${CLOCK_HINT}"` : ""}>${callState !== "idle" && isTestCall ? "END CALL" : "CALL"}</button>
         </div>
         <p class="hint-line">Same Twilio path from +1 239 349 9491. Number never saved.</p>
       </div>` : ""}
     </div>
   </div>`;
+}
+
+// Auto-advance (2026-11-23, v31 — Rome approved: "Yes, auto-advance to
+// the next lead"): after an outcome is logged or a meeting is booked, the
+// dialer moves to the next lead on its own, so the rep never has to tap
+// Next lead. Returns false on the last lead (stays put — the caller
+// decides whether to toast). Same cleanup as Prev/Next: the TEXT composer
+// belongs to one lead, so it closes on a lead change. Dialing and hang-up
+// alone never advance — only a logged outcome or a booked meeting does.
+function advanceToNextLead() {
+  const leads = state.leads || [];
+  if (ripIndex >= leads.length - 1) return false;
+  ripIndex++;
+  smsComposerOpen = false; smsDraft = ""; smsComposerError = "";
+  return true;
 }
 
 function bindRip() {
@@ -1348,17 +1404,53 @@ function bindRip() {
   const prev = $("#prev-lead"), next = $("#next-lead");
   // The TEXT composer belongs to one lead: changing leads closes it.
   if (prev) prev.onclick = () => { if (ripIndex > 0) { ripIndex--; smsComposerOpen = false; smsDraft = ""; smsComposerError = ""; render(); } };
-  if (next) next.onclick = () => { if (ripIndex < leads.length - 1) { ripIndex++; smsComposerOpen = false; smsDraft = ""; smsComposerError = ""; render(); } };
+  if (next) next.onclick = () => {
+    // No-skip guard (v31): same as the outcome buttons — a disabled
+    // button can't be clicked in a real browser; this also blocks
+    // programmatic clicks on a locked lead. Prev is never guarded.
+    if (skipLocked()) { showToast("Call this lead first — you can't skip ahead."); return; }
+    if (ripIndex < leads.length - 1) { ripIndex++; smsComposerOpen = false; smsDraft = ""; smsComposerError = ""; render(); }
+  };
   document.querySelectorAll("[data-dispo]").forEach((b) => {
     b.onclick = async () => {
+      // Clock-in gate (v31): no outcome logging while off the clock.
+      if (!clockedIn()) { showToast(CLOCK_HINT); return; }
+      // No-skip guard (v31): a disabled button can't be clicked in a real
+      // browser; this also blocks programmatic clicks on a locked lead.
+      if (skipLocked()) { showToast("Call this lead first — you can't skip ahead."); return; }
       const d = b.dataset.dispo;
       const map = {no_answer: "noAnswer", voicemail: "voicemail", not_interested: "connected", callback: "connected", receptionist: "connected", send_vsl: "connected"};
-      await mutate("logDisposition", {leadId: lead.id, outcome: d, stat: map[d] || "connected"});
+      // Auto-advance (2026-11-23, v31 — Rome approved): after the outcome
+      // is logged, the dialer moves to the next lead on its own. A failed
+      // log stays on the lead; the last lead stays put with a toast.
+      try {
+        await mutate("logDisposition", {leadId: lead.id, outcome: d, stat: map[d] || "connected"});
+      } catch (e) {
+        showToast(e.message || "Could not log that — try again.");
+        return;
+      }
+      if (!advanceToNextLead()) showToast("That's the last lead");
+      render();
     };
   });
   const bookBtn = $("#book-meeting-btn");
   if (bookBtn) bookBtn.onclick = async () => {
-    await mutate("bookMeeting", {leadId: lead.id});
+    // Clock-in gate (v31): no booking while off the clock — the server
+    // refuses bookMeeting with 403 too.
+    if (!clockedIn()) { showToast(CLOCK_HINT); return; }
+    // No-skip guard (v31): same as the outcome buttons — booking without
+    // a call first is the skip loophole. Owner exempt via skipLocked().
+    if (skipLocked()) { showToast("Call this lead first — you can't skip ahead."); return; }
+    const bookedName = lead.business; // captured before any advance
+    try {
+      await mutate("bookMeeting", {leadId: lead.id});
+    } catch (e) {
+      // The booking itself failed: stay on the lead, say so plainly.
+      try { await loadState(); } catch (_) {}
+      render();
+      showToast(e.message || "Could not book that meeting — try again.");
+      return;
+    }
     const mtgs = (state.meetings || []).filter((x) => x.leadId === lead.id);
     const m = mtgs[mtgs.length - 1];
     const when = m ? (m.date + (m.time ? " " + m.time : "")) : "";
@@ -1392,8 +1484,12 @@ function bindRip() {
       try { await loadState(); await loadCaps(); } catch (_) {}
       smsNote = "Text not sent — " + (e2.message || "try again.");
     }
+    // Auto-advance (v31): the booking + email + SMS flow is done — move to
+    // the next lead the same way as an outcome. On the last lead it stays
+    // put (no extra toast — the booking confirmation below says enough).
+    advanceToNextLead();
     render();
-    showToast("Meeting booked for " + lead.business + ". " + emailNote + " " + smsNote);
+    showToast("Meeting booked for " + bookedName + ". " + emailNote + " " + smsNote);
   };
   const readyBtn = $("#ready-btn");
   if (readyBtn) readyBtn.onclick = async () => {
@@ -1415,6 +1511,9 @@ function bindRip() {
   if (scriptBtn) scriptBtn.onclick = () => $("#script-box").classList.toggle("hidden");
   const dropVm = $("#dropvm-btn");
   if (dropVm) dropVm.onclick = () => {
+    // Clock-in gate (v31): no Drop VM while off the clock — END CALL
+    // still works (it is never gated) and the end-of-call log lands.
+    if (!clockedIn()) { showToast(CLOCK_HINT); return; }
     // During a Twilio call: end it and log Voicemail. (Twilio cannot inject
     // a recorded message into a live call without a recording + AMD — that
     // is a future step, documented in the README. This ends + logs, in sync.)
@@ -1425,6 +1524,11 @@ function bindRip() {
   const callBtn = $("#call-btn");
   if (callBtn) callBtn.onclick = async () => {
     if (callState !== "idle") { endCall("local"); return; } // END CALL
+    // Clock-in gate (v31): no dial while off the clock — for anyone,
+    // owner included. The Twilio path is also server-gated at
+    // /api/caps/dial; this guard covers the Google Voice fallback,
+    // which logs the dial directly instead of reserving through caps.
+    if (!clockedIn()) { showToast(CLOCK_HINT); return; }
     const blocked = capsBlockedReason();
     if (blocked) { showToast(blocked); return; } // cap hit — the server would refuse too
     if (twilioReady) { await startTwilioCall(lead); return; }
@@ -1440,6 +1544,8 @@ function bindRip() {
   };
   const textBtn = $("#text-btn");
   if (textBtn) textBtn.onclick = () => {
+    // Clock-in gate (v31): no texting while off the clock.
+    if (!clockedIn()) { showToast(CLOCK_HINT); return; }
     const blocked = capsSmsBlockedReason();
     if (blocked) { showToast(blocked); return; }
     smsComposerOpen = !smsComposerOpen;
@@ -1456,6 +1562,10 @@ function bindRip() {
   if (smsClose) smsClose.onclick = () => { smsComposerOpen = false; smsComposerError = ""; render(); };
   const smsSend = $("#sms-send-btn");
   if (smsSend) smsSend.onclick = async () => {
+    // Clock-in gate (v31): the server refuses sms/send while off the
+    // clock too; this keeps the composer honest if the rep clocks out
+    // with it open.
+    if (!clockedIn()) { smsComposerError = CLOCK_HINT; render(); return; }
     const text = (smsInput ? smsInput.value : smsDraft).trim();
     if (!text || smsSending) return;
     smsSending = true; smsComposerError = "";
@@ -1484,6 +1594,10 @@ function bindRip() {
       showToast("A lead call is in progress — end it before starting a test call.");
       return;
     }
+    // Clock-in gate (v31): a test call is still a call — it needs the
+    // owner on the clock. The Twilio path is also server-gated at
+    // /api/caps/dial.
+    if (!clockedIn()) { showToast(CLOCK_HINT); return; }
     const to = String((testInput ? testInput.value : "") || "").replace(/[^\d+]/g, "");
     if (!/^\+?\d{7,15}$/.test(to)) { showToast("Type a full phone number to test-call, e.g. +1 555 123 4567."); return; }
     const blocked = capsBlockedReason();
@@ -1944,9 +2058,10 @@ function renderCalendar() {
         <div class="field"><label>Your name</label><input class="input" id="cal-name" type="text" value="Roman Royce"></div>
       </div>
       <div style="display:flex;gap:8px;flex-wrap:wrap">
-        <button class="btn btn--primary" id="cal-confirm">Confirm booking</button>
-        <button class="btn" id="cal-open">Book on Cal.com ↗</button>
+        <button class="btn btn--primary" id="cal-confirm"${!clockedIn() ? ` disabled title="${CLOCK_HINT}"` : ""}>Confirm booking</button>
+        <button class="btn" id="cal-open"${!clockedIn() ? ` disabled title="${CLOCK_HINT}"` : ""}>Book on Cal.com ↗</button>
       </div>
+      ${!clockedIn() ? `<p class="hint-line">${esc(CLOCK_HINT)}</p>` : ""}
       <p class="notice">Times are shown in ${esc(calTz)} (${esc(CAL_TZ_LABELS[calTz] || "")}). Confirm saves the meeting here and in the call log. The live Cal.com booking itself happens on cal.com — this app does not hold a Cal.com API key.</p>
       <div class="calbook-foot">Cal.com</div>
     </div>
@@ -1968,9 +2083,12 @@ function bindCalendar() {
   const tz = $("#cal-tz");
   if (tz) tz.onchange = () => { calTz = tz.value; render(); };
   const open = $("#cal-open");
-  if (open) open.onclick = () => { const t = CAL_TYPES.find((x) => x.id === calEvent) || CAL_TYPES[1]; window.open(t.link, "_blank"); };
+  if (open) open.onclick = () => { if (!clockedIn()) { showToast(CLOCK_HINT); return; } const t = CAL_TYPES.find((x) => x.id === calEvent) || CAL_TYPES[1]; window.open(t.link, "_blank"); };
   const confirm = $("#cal-confirm");
   if (confirm) confirm.onclick = async () => {
+    // Clock-in gate (v31): no booking while off the clock — the server
+    // refuses bookMeeting with 403 too.
+    if (!clockedIn()) { showToast(CLOCK_HINT); return; }
     if (!calDate || !calTime) { showToast("Pick a day and a time first."); return; }
     const type = CAL_TYPES.find((t) => t.id === (calEvent || "30min")) || CAL_TYPES[1];
     const date = calDate.toLocaleDateString("en-US", {weekday: "long", month: "long", day: "numeric"});
@@ -1997,24 +2115,6 @@ function bindCalendar() {
    or latest call type + outcome), sorted most recent first, with an iOS
    search bar on top that filters live by name / phone / message / call.
    All data is real: calls/messages come from state, nothing invented. */
-function iphoneChrome(inner, opts) {
-  const compact = !!(opts && opts.compact);
-  const label = (opts && opts.label) || "iPhone showing the Call Log";
-  return `
-  <div class="iphone-wrap">
-    <div class="iphone${compact ? " iphone--compact" : ""}" role="img" aria-label="${label}">
-      <span class="iphone-side iphone-side-l1"></span>
-      <span class="iphone-side iphone-side-l2"></span>
-      <span class="iphone-side iphone-side-r"></span>
-      <div class="iphone-screen">
-        <div class="iphone-island"></div>
-        <div class="iphone-status"><span>9:41</span><span class="iphone-status-icons"><svg width="17" height="11" viewBox="0 0 17 11" fill="#fff"><rect x="0" y="7" width="3" height="4" rx="1"/><rect x="4.5" y="5" width="3" height="6" rx="1"/><rect x="9" y="2.5" width="3" height="8.5" rx="1"/><rect x="13.5" y="0" width="3" height="11" rx="1"/></svg><svg width="16" height="11" viewBox="0 0 16 12" fill="#fff"><path d="M8 10.8a1.4 1.4 0 1 0 0-2.8 1.4 1.4 0 0 0 0 2.8zM8 6.2c1.2 0 2.3.5 3.1 1.3l-1.5 1.5A2.4 2.4 0 0 0 8 8.4c-.7 0-1.3.2-1.7.6L4.9 7.5A4.6 4.6 0 0 1 8 6.2zM8 2c2.4 0 4.6 1 6.2 2.5L12.7 6A6.4 6.4 0 0 0 8 4.2c-1.7 0-3.3.7-4.5 1.8L2 4.5A8.6 8.6 0 0 1 8 2z"/></svg><svg width="25" height="12" viewBox="0 0 25 12" fill="none"><rect x="0.5" y="0.5" width="21" height="11" rx="3.5" stroke="#fff" opacity="0.4"/><rect x="2" y="2" width="16" height="8" rx="2" fill="#fff"/><path d="M23.5 4v4a2 2 0 0 0 0-4z" fill="#fff" opacity="0.4"/></svg></span></div>
-        ${inner}
-        <div class="iphone-home"></div>
-      </div>
-    </div>
-  </div>`;
-}
 /* Latest activity for one lead, for the unified Call Log list: whichever
    is newer, the latest message or the latest call. Stored timestamps are
    "Nov 20, 2026" + "2:30 PM" strings — parsed for comparison only. */
@@ -2036,10 +2136,10 @@ function latestActivityFor(leadId) {
    small camera dot in the top bezel, no Dynamic Island, slim status bar.
    Inside it runs Messages in the real iPad layout: conversation list on
    the LEFT, open thread on the RIGHT, side by side in the same frame. */
-function ipadChrome(inner) {
+function ipadChrome(inner, label) {
   return `
   <div class="ipad-wrap">
-    <div class="ipad" role="img" aria-label="iPad showing the Call Log">
+    <div class="ipad" role="img" aria-label="${label || "iPad showing the Call Log"}">
       <div class="ipad-cam"></div>
       <div class="ipad-screen">
         <div class="ipad-status"><span>9:41</span><span class="iphone-status-icons"><svg width="17" height="11" viewBox="0 0 17 11" fill="#fff"><rect x="0" y="7" width="3" height="4" rx="1"/><rect x="4.5" y="5" width="3" height="6" rx="1"/><rect x="9" y="2.5" width="3" height="8.5" rx="1"/><rect x="13.5" y="0" width="3" height="11" rx="1"/></svg><svg width="16" height="11" viewBox="0 0 16 12" fill="#fff"><path d="M8 10.8a1.4 1.4 0 1 0 0-2.8 1.4 1.4 0 0 0 0 2.8zM8 6.2c1.2 0 2.3.5 3.1 1.3l-1.5 1.5A2.4 2.4 0 0 0 8 8.4c-.7 0-1.3.2-1.7.6L4.9 7.5A4.6 4.6 0 0 1 8 6.2zM8 2c2.4 0 4.6 1 6.2 2.5L12.7 6A6.4 6.4 0 0 0 8 4.2c-1.7 0-3.3.7-4.5 1.8L2 4.5A8.6 8.6 0 0 1 8 2z"/></svg><svg width="25" height="12" viewBox="0 0 25 12" fill="none"><rect x="0.5" y="0.5" width="21" height="11" rx="3.5" stroke="#fff" opacity="0.4"/><rect x="2" y="2" width="16" height="8" rx="2" fill="#fff"/><path d="M23.5 4v4a2 2 0 0 0 0-4z" fill="#fff" opacity="0.4"/></svg></span></div>
@@ -2067,7 +2167,10 @@ function renderCallLog() {
   const orphanLeads = orphanIds.map((id) => ({id, business: leadNameFor(id), phone: "", stage: "Deleted"}));
   const rows = [...leads, ...orphanLeads].map((l) => ({lead: l, act: latestActivityFor(l.id)}))
     .sort((a, b) => (b.act ? b.act.at : 0) - (a.act ? a.act.at : 0));
-  const isTeam = !activeConv || activeConv === "__team__";
+  // Nothing is selected until the rep taps a conversation (2026-11-23,
+  // v31): entering the tab shows the empty state, never the team chat.
+  const isTeam = activeConv === "__team__";
+  const hasSelection = activeConv !== null;
   const list = `
       <div class="ipad-list-body"><div class="conv-list">
       <button class="conv-item team-pin${isTeam ? " sel" : ""}" data-openconv="__team__">
@@ -2108,7 +2211,7 @@ function renderCallLog() {
           return `${(m.date || m.time) ? `<div class="im-stamp">${esc(m.date || "")}${m.date && m.time ? " · " : ""}${esc(m.time || "")}</div>` : ""}${mine ? "" : `<div class="im-stamp" style="text-align:left;margin-left:4px">${esc(who)}</div>`}<div class="msg ${mine ? "out" : "in"}">${esc(m.text)}</div>`;
         }).join("") : `<div class="notice iphone-empty">No messages yet — say hi to the team</div>`}
       </div></div>`;
-  } else {
+  } else if (hasSelection) {
     const lead = leadById(activeConv);
     const conv = convFor(activeConv) || {messages: []};
     const calls = callsFor(activeConv);
@@ -2128,7 +2231,30 @@ function renderCallLog() {
         }).join("") || ""}
         ${!calls.length && !(conv.messages || []).length ? `<div class="notice iphone-empty">No calls or messages yet for this lead.</div>` : ""}
       </div></div>`;
+  } else {
+    // No conversation selected yet: iPad Messages shows an empty pane —
+    // no thread, no input, nothing to send to. Tapping a row opens it.
+    thread = `
+      <div class="ipad-empty">
+        <svg width="44" height="44" viewBox="0 0 24 24" fill="none" stroke="#98989d" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M21 11.5a8.38 8.38 0 0 1-.9 3.8 8.5 8.5 0 0 1-7.6 4.7 8.38 8.38 0 0 1-3.8-.9L3 21l1.9-5.7a8.38 8.38 0 0 1-.9-3.8 8.5 8.5 0 0 1 4.7-7.6 8.38 8.38 0 0 1 3.8-.9h.5a8.48 8.48 0 0 1 8 8v.5z"/></svg>
+        <b>Select a conversation</b>
+        <span>Tap a conversation on the left to open it — or tap SFB SALES TEAM for the team chat.</span>
+      </div>`;
   }
+  // The composer belongs to an open thread only — the empty state has no
+  // input and no note, so nothing can be sent to nobody. Clock-in gate
+  // (v31): a lead thread is an in-app SMS to a lead, so its input is
+  // disabled while not clocked in (the server refuses sms/send too).
+  // The SFB SALES TEAM group chat is internal team coordination, not
+  // client work — it stays sendable while off the clock.
+  const threadClocked = isTeam || clockedIn();
+  const composer = hasSelection ? `
+          <div class="chat-input iphone-input">
+            <input class="input" id="chat-input" type="text" placeholder="iMessage"${!threadClocked ? ` disabled title="${CLOCK_HINT}"` : ""}>
+            <button class="chat-send" id="chat-send" type="button" aria-label="Send"${!threadClocked ? ` disabled title="${CLOCK_HINT}"` : ""}>↑</button>
+          </div>
+          ${!threadClocked ? `<p class="notice iphone-note">${esc(CLOCK_HINT)}</p>` : ""}
+          <p class="notice iphone-note">${isTeam ? "Messages here go to the whole team — Roman, Logan, and Braylen." : "Messages you type here are texted to the lead from +1 239 349 9491 — delivery is confirmed only when the carrier reports it."}</p>` : "";
   return ipadChrome(`
       <div class="ipad-body">
         <div class="ipad-list">
@@ -2138,11 +2264,7 @@ function renderCallLog() {
         </div>
         <div class="ipad-thread">
           ${thread}
-          <div class="chat-input iphone-input">
-            <input class="input" id="chat-input" type="text" placeholder="iMessage">
-            <button class="chat-send" id="chat-send" type="button" aria-label="Send">↑</button>
-          </div>
-          <p class="notice iphone-note">${isTeam ? "Messages here go to the whole team — Roman, Logan, and Braylen." : "Messages you type here are texted to the lead from +1 239 349 9491 — delivery is confirmed only when the carrier reports it."}</p>
+          ${composer}
         </div>
       </div>`);
 }
@@ -2179,9 +2301,14 @@ function bindCallLog() {
   const send = $("#chat-send");
   const sendMsg = async () => {
     const inp = $("#chat-input");
+    if (!inp || !activeConv) return; // empty state: no thread, nothing to send to
     const text = inp.value.trim();
     if (!text) return;
-    if (!activeConv || activeConv === "__team__") await mutate("sendTeamMessage", {text});
+    // Clock-in gate (v31): a lead thread is an in-app SMS — blocked
+    // while off the clock (the server refuses sms/send too). The team
+    // chat is internal coordination and stays sendable.
+    if (activeConv !== "__team__" && !clockedIn()) { showToast(CLOCK_HINT); return; }
+    if (activeConv === "__team__") await mutate("sendTeamMessage", {text});
     else {
       // Lead thread: a real in-app text (2026-11-21). The old path only
       // saved the text to the thread — it never sent anything. Now the
@@ -3341,7 +3468,7 @@ function renderEmail() {
     <div class="field"><label>Template</label><select class="input" id="email-template">${tplOptions}</select></div>
     <div class="field"><label>Subject</label><input class="input" id="email-subject" type="text" value="${esc(merged.subject)}"></div>
     <div class="field"><label>Body</label><textarea class="input" id="email-body" rows="10">${esc(merged.body)}</textarea></div>
-    <button class="btn btn--primary" id="email-send" type="button" ${emailConnected === false ? "disabled" : ""}>Send email</button>
+    <button class="btn btn--primary" id="email-send" type="button"${emailConnected === false || !clockedIn() ? ` disabled title="${!clockedIn() ? CLOCK_HINT : ""}"` : ""}>Send email</button>
     <p class="notice">Sends count against the daily email cap — team 100/day, you 33/day. From roman@sixfigureblueprintsllc.com. Replace [VSL link] with the real video link before sending — it is never sent as-is.</p>
   </div>
   <div class="card"><div class="section-title" style="margin-top:0">Templates</div>
@@ -3374,6 +3501,9 @@ function bindEmail() {
   document.querySelectorAll("[data-use-tpl]").forEach((b) => { b.onclick = () => { emailTplKey = b.dataset.useTpl; const s2 = $("#email-template"); if (s2) s2.value = emailTplKey; fillEmailFromTemplate(); }; });
   const send = $("#email-send");
   if (send) send.onclick = async () => {
+    // Clock-in gate (v31): no email while off the clock — the server
+    // refuses sendEmail with 403 too.
+    if (!clockedIn()) { showToast(CLOCK_HINT); return; }
     const lead = leadById(emailLeadId);
     if (!lead) { showToast("Pick a lead first."); return; }
     const to = $("#email-to").value.trim();
@@ -3453,7 +3583,7 @@ function assignRowHtml(a) {
     </div>
     <span class="badge ${a.status === "done" ? "green" : a.status === "doing" ? "amber" : ""}">${esc(a.status)}</span></div>
     <div style="display:flex;gap:8px;margin-top:10px;flex-wrap:wrap">
-      ${canChange ? `<button class="btn" type="button" data-asg-status="${a.id}" data-next="${nextStatus}">${nextLabel}</button>` : ""}
+      ${canChange ? `<button class=\"btn\" type="button" data-asg-status="${a.id}" data-next="${nextStatus}"${!clockedIn() ? ` disabled title="${CLOCK_HINT}"` : ""}>${nextLabel}</button>` : ""}
       ${isOwner ? `<button class="btn" type="button" data-asg-edit="${a.id}">Edit</button><button class="btn btn-danger" type="button" data-asg-del="${a.id}">Delete</button>` : ""}
     </div></div>`;
 }
@@ -3498,6 +3628,8 @@ function bindAssignments() {
   const sf = $("#asg-status-filter");
   if (sf) sf.onchange = () => { assignStatusFilter = sf.value; render(); };
   document.querySelectorAll("[data-asg-status]").forEach((b) => { b.onclick = async () => {
+    // Clock-in gate (v31): no status changes while off the clock.
+    if (!clockedIn()) { showToast(CLOCK_HINT); return; }
     try { await mutate("setAssignmentStatus", {id: b.dataset.asgStatus, status: b.dataset.next}); }
     catch (e) { showToast("Status not changed — " + (e.message || "try again.")); }
   }; });
@@ -3557,7 +3689,7 @@ function renderToday() {
   const doneCount = due.filter((a) => a.status === "done").length;
   const open = sortAssignments(due.filter((a) => a.status !== "done"));
   const row = (a) => `<div class="card assign-row"><label style="display:flex;gap:10px;align-items:flex-start;cursor:pointer">
-    <input type="checkbox" data-today-done="${a.id}" style="margin-top:4px">
+    <input type="checkbox" data-today-done="${a.id}" style="margin-top:4px"${!clockedIn() ? ` disabled title="${CLOCK_HINT}"` : ""}>
     <span style="flex:1"><b>${esc(a.title)}</b>
     <span style="color:var(--muted);font-size:13px;display:block">${todayScope === "team" ? esc(DISPLAY_NAMES[a.assignee] || a.assignee) + " · " : ""}<span class="${assignDueState(a) === "overdue" ? "overdue" : ""}">${esc(assignDueLabel(a))}</span></span>
     ${a.details ? `<span style="font-size:13px;display:block;margin-top:4px">${esc(a.details)}</span>` : ""}</span></label></div>`;
@@ -3574,6 +3706,8 @@ function renderToday() {
 function bindToday() {
   document.querySelectorAll("[data-today-scope]").forEach((b) => { b.onclick = () => { todayScope = b.dataset.todayScope; render(); }; });
   document.querySelectorAll("[data-today-done]").forEach((c) => { c.onchange = async () => {
+    // Clock-in gate (v31): no marking done while off the clock.
+    if (!clockedIn()) { c.checked = false; showToast(CLOCK_HINT); return; }
     if (!c.checked) return;
     try { await mutate("setAssignmentStatus", {id: c.dataset.todayDone, status: "done"}); }
     catch (e) { showToast("Task not marked done — " + (e.message || "try again.")); }
@@ -3625,6 +3759,40 @@ function tcOpenShiftFor(username) {
   const mine = tcUserEvents(tcEvents(), username);
   const last = mine[mine.length - 1];
   return last && last.type === "in" ? last : null;
+}
+// Clock-in gate (2026-11-23, v31 — Rome: nobody works off the clock,
+// not even the owner). Work buttons are disabled while not clocked in;
+// the server enforces the same rule on caps/dial, sms/send, sendEmail
+// and bookMeeting. Viewing, navigation, the team chat and clocking
+// in/out are never gated. The AI receptionist answers inbound calls
+// regardless — this gate is for the human team on the dashboard.
+function clockedIn() { return !!tcOpenShiftFor(me); }
+const CLOCK_HINT = "You're not clocked in — clock in at the top to work.";
+// Top-bar clock control (2026-11-23, v31): always visible, on every
+// tab. Shows "Clock in" while out, "Clocked in • since 9:04 AM" +
+// "Clock out" while in; one tap toggles via the existing clockIn /
+// clockOut ops, then re-renders so the gating flips at once.
+function syncClockChip() {
+  const chip = document.getElementById("clock-chip");
+  if (!chip) return;
+  if (!me || !state || !state.timeClock) { chip.innerHTML = ""; chip.classList.add("hidden"); return; }
+  chip.classList.remove("hidden");
+  const open = tcOpenShiftFor(me);
+  if (open) {
+    const since = new Date(open.at).toLocaleTimeString("en-US", { hour: "numeric", minute: "2-digit", timeZone: "America/New_York" });
+    chip.innerHTML = `<span class="clock-chip-in">Clocked in • since ${esc(since)}</span><button class="btn clock-chip-btn" id="clock-chip-toggle" type="button">Clock out</button>`;
+  } else {
+    chip.innerHTML = `<button class="btn btn-green clock-chip-btn" id="clock-chip-toggle" type="button">Clock in</button>`;
+  }
+  const t = document.getElementById("clock-chip-toggle");
+  if (t) t.onclick = async () => {
+    try {
+      await mutate(open ? "clockOut" : "clockIn", {});
+      showToast(open ? "Clocked out." : "Clocked in — you're on the clock.");
+    } catch (e) {
+      showToast((open ? "Clock out failed — " : "Clock in failed — ") + (e.message || "try again."));
+    }
+  };
 }
 // Derived shifts: [{inEv, outEv|null, hours}] — an open shift counts the
 // elapsed time up to now. Hours are attributed to the clock-in date.

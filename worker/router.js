@@ -276,6 +276,17 @@ function tcOpenShift(events, username) {
   const last = mine[mine.length - 1];
   return last && last.type === "in" ? last : null;
 }
+// Clock-in gate (2026-11-23, v31 — Rome: nobody works off the clock,
+// not even the owner). Action-starting endpoints refuse with 403 when
+// the signed-in user has no open shift. The end-of-call log is NEVER
+// gated (a call that started clocked in must still land if they clock
+// out mid-call — logCallEnd/logDisposition stay open), and neither are
+// Ava's inbound path or the BillMe sync.
+function isClockedIn(s, username) {
+  const events = (s.timeClock && Array.isArray(s.timeClock.events)) ? s.timeClock.events : [];
+  return !!tcOpenShift(events, username);
+}
+const CLOCK_GATE_MSG = "You're not clocked in — clock in at the top to work.";
 // Derived shifts for a user: [{in, out|null, hours}] in chronological order.
 function tcShifts(events, username) {
   const shifts = [];
@@ -817,6 +828,10 @@ async function handleApi(request, env) {
   // KV allows. A retry after a stale-token failure must NOT reserve
   // twice: the client only calls this on the first attempt.
   if (path === "/api/caps/dial" && request.method === "POST") {
+    // Clock-in gate (2026-11-23, v31): no dial reservation while off
+    // the clock — for anyone, owner included.
+    const s0 = await getState(env);
+    if (!isClockedIn(s0, username)) return err(CLOCK_GATE_MSG, 403);
     const limits = await getCapsLimits(env);
     const date = etDateStr();
     const team = await getCapsCounters(env, date);
@@ -961,6 +976,8 @@ async function handleApi(request, env) {
     const s = await getState(env);
     const lead = (s.leads || []).find((x) => x.id === leadId);
     if (!lead) return err("Lead not found.", 400);
+    // Clock-in gate (2026-11-23, v31): no SMS while off the clock.
+    if (!isClockedIn(s, username)) return err(CLOCK_GATE_MSG, 403);
     if (!text || text.length > 2000) return err("Enter a message of 2000 characters or fewer.", 400);
     const to = normUsPhone(lead.phone);
     if (!to) return err("This lead has no usable phone number.", 400);
@@ -1093,6 +1110,9 @@ async function handleApi(request, env) {
       if (body.stat) s.sessionStats[body.stat] = (s.sessionStats[body.stat] || 0) + 1;
       if (body.stat && body.stat !== "dials") s.sessionStats.dials = (s.sessionStats.dials || 0) + 1;
     } else if (op === "bookMeeting") {
+      // Clock-in gate (2026-11-23, v31): no meeting booking while off
+      // the clock — for anyone, owner included.
+      if (!isClockedIn(s, username)) return err(CLOCK_GATE_MSG, 403);
       const l = s.leads.find((x) => x.id === body.leadId);
       s.meetings.push({
         id: "mtg-" + crypto.randomUUID().slice(0, 8),
@@ -1110,8 +1130,11 @@ async function handleApi(request, env) {
       // ONLY — nobody clocks anyone else in or out (username comes from
       // the session, never from the request body). One active shift per
       // user: clocking in while clocked in, or out while clocked out, is
-      // refused with a clear message. This does NOT gate dialing or
-      // anything else — logging and visibility only.
+      // refused with a clear message. (v31: the open shift also gates
+      // work — caps/dial, sms/send, sendEmail and bookMeeting refuse
+      // with 403 while the user is not clocked in. The end-of-call log
+      // is never gated, so a call that started on the clock still lands
+      // if the rep clocks out mid-call.)
       const tc = tcEnsure(s);
       const at = new Date().toISOString();
       if (op === "clockIn") {
@@ -1266,6 +1289,8 @@ async function handleApi(request, env) {
       if (body.confirmed !== true) return err("Delete not confirmed — send confirmed:true.", 400);
       s.emailTemplates = s.emailTemplates.filter((x) => x.id !== body.id);
     } else if (op === "sendEmail") {
+      // Clock-in gate (2026-11-23, v31): no email while off the clock.
+      if (!isClockedIn(s, username)) return err(CLOCK_GATE_MSG, 403);
       // (a) Validate lead + fields before touching caps or Resend.
       const lead = (s.leads || []).find((x) => x.id === body.leadId);
       if (!lead) return err("Lead not found.", 400);
