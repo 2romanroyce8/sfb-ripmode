@@ -1,3 +1,5 @@
 state-backup-*.json
 leads-miami-305.json
 leads-tampa-813.json
+enrich-backup-*.json
+__pycache__/

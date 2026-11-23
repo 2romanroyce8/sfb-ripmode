@@ -186,49 +186,15 @@ function capsRowsHtml() {
     ${t.emails === 0 ? `<p class="caps-note">No emails sent yet — Resend not wired.</p>` : ""}
     <p class="caps-note">Outbound talk today ≈ ${talkCost} (est.) · ${esc(recep)} · Inbound receptionist calls are not capped — minutes and cost are shown so spend stays visible. Resets midnight ET.</p>`;
 }
-function capsStripHtml() {
-  if (!capsData) return `<div class="card caps-strip" id="caps-strip"><div class="section-title" style="margin-top:0">Daily limits</div><div class="notice">Loading today's limits…</div></div>`;
-  return `<div class="card caps-strip" id="caps-strip"><div class="section-title" style="margin-top:0">Daily limits — resets midnight ET</div>${capsRowsHtml()}</div>`;
-}
-// Compact caps strip for RIP MODE (2026-11-21): the same 7 numbers as
-// capsRowsHtml (dials you/team, talk you/team, texts team-only, emails
-// you/team) in one slim 4-column grid + one short notes line — the 8-row
-// tall card is gone from this tab. The Analytics Daily Limits card keeps
-// the full capsRowsHtml form.
-function capsStripCompactHtml() {
-  if (!capsData) return `<div class="card caps-strip caps-strip-compact" id="caps-strip"><div class="section-title" style="margin-top:0">Daily limits</div><div class="notice">Loading today's limits…</div></div>`;
-  const t = capsTeam(), m = capsMine(), tl = capsLimits().team, ul = capsMyLimits();
-  const smsUsed = (t.sms === null || t.sms === undefined) ? "—" : String(t.sms);
-  const smsNum = (typeof t.sms === "number") ? t.sms : 0;
-  const talkCost = "$" + ((t.talkSec / 60) * OUTBOUND_COST_PER_MIN).toFixed(2);
-  const recep = (capsData && capsData.receptionistMinutes !== null && capsData.receptionistMinutes !== undefined)
-    ? "Receptionist today: " + capsData.receptionistMinutes + " min" : "Receptionist minutes: n/a";
-  const mini = (label, usedNum, limitNum, usedLabel, limitLabel) => {
-    const pct = limitNum > 0 ? Math.min(100, Math.round((usedNum / limitNum) * 100)) : 0;
-    const over = usedNum >= limitNum;
-    return `<div class="caps-mini"><span class="caps-mini-label">${esc(label)}</span><b>${esc(usedLabel)} / ${esc(limitLabel)}</b><span class="caps-mini-bar"><span class="${over ? "over" : ""}" style="width:${pct}%"></span></span></div>`;
-  };
-  return `<div class="card caps-strip caps-strip-compact" id="caps-strip">
-    <div class="section-title" style="margin-top:0">Daily limits — resets midnight ET</div>
-    <div class="caps-grid">
-      ${mini("Dials — you", m.dials, ul.dials, String(m.dials), String(ul.dials))}
-      ${mini("Dials — team", t.dials, tl.dials, String(t.dials), String(tl.dials))}
-      ${mini("Talk — you", m.talkSec / 60, ul.talkMin, capsTalkMin(m.talkSec) + " min", ul.talkMin + " min")}
-      ${mini("Talk — team", t.talkSec / 60, tl.talkMin, capsTalkMin(t.talkSec) + " min", tl.talkMin + " min")}
-      ${mini("Texts — team", smsNum, tl.sms, smsUsed, String(tl.sms))}
-      ${mini("Emails — you", m.emails, ul.emails, String(m.emails), String(ul.emails))}
-      ${mini("Emails — team", t.emails, tl.emails, String(t.emails), String(tl.emails))}
-    </div>
-    <p class="hint-line">Texts are team-only · Emails ${t.emails === 0 ? "0/" + tl.emails + " — Resend not wired" : t.emails + "/" + tl.emails} · Outbound talk ≈ ${talkCost} · ${esc(recep)} · Resets midnight ET.</p>
-  </div>`;
-}
-// In-place refresh of the RIP strip (no full re-render, so a live call's
-// DOM is never rebuilt under it). The Analytics card is refreshed by
-// render() when that tab loads; its form is never wiped mid-edit.
+// In-place refresh of the Analytics Daily Limits rows (2026-11-23, v29):
+// the RIP MODE strip is gone (Rome: the limits don't belong on the dialer
+// page at all), so the Analytics card is the single home for the limits.
+// Only #caps-rows is replaced — the editable caps form below it is never
+// wiped mid-edit, and a live call's DOM is never rebuilt under it.
 function updateCapsDom() {
-  const el = $("#caps-strip");
+  const el = $("#caps-rows");
   if (el && capsData) {
-    try { el.outerHTML = (currentTab === "rip" ? capsStripCompactHtml() : capsStripHtml()); } catch (_) {}
+    try { el.innerHTML = capsRowsHtml(); } catch (_) {}
   }
 }
 
@@ -1298,7 +1264,6 @@ function renderRip() {
         ${smsComposerOpen ? smsComposerHtml(lead) : ""}
       </div>`;
   return `
-  ${isOwner ? capsStripCompactHtml() : ""}
   <div class="grid2 rip-grid">
     <div class="card rip-compact">
       <div class="lead-line">
@@ -1308,6 +1273,12 @@ function renderRip() {
         <div>Owner: ${esc(lead.owner || "no name on file")}</div>
         <div>Phone: ${esc(lead.phone)}</div>
         ${lead.email ? `<div>Email: ${esc(lead.email)}</div>` : `<div>Email: none on file</div>`}
+        ${lead.website || socialsHtml(lead) || tagsHtml(lead, 6) ? `
+        <div class="rip-online">
+          ${lead.website ? `<div>Website: ${websiteHtml(lead)}</div>` : ""}
+          ${socialsHtml(lead) ? `<div class="chip-row" style="margin-top:6px">${socialsHtml(lead)}</div>` : ""}
+          ${tagsHtml(lead, 6) ? `<div class="chip-row" style="margin-top:6px">${tagsHtml(lead, 6)}</div>` : ""}
+        </div>` : ""}
       </div>
       ${calls.length ? `
       <div class="section-title">Last Call</div>
@@ -1342,6 +1313,7 @@ function renderRip() {
     </div>
     <div>
       ${iphoneChrome(dialerInner, {compact: true, label: "iPhone showing the dialer"})}
+      ${briefCardHtml(lead)}
       ${isOwner ? `
       <div class="card" style="margin-top:12px">
         <div class="section-title" style="margin-top:0">Test call — owner only</div>
@@ -1528,6 +1500,109 @@ function stopMic() {
 }
 
 /* ---------- LEADS ---------- */
+/* ---------- LEAD ENRICHMENT DISPLAY (v29, 2026-11-23) ----------
+   Verified fields merged from leads-enriched-2026-11-23.json into KV:
+   website, tags, socials, owner, facts, callBrief. A field missing on a
+   lead is simply omitted — never a placeholder, never invented. Every
+   link is a real href to the enriched URL. */
+const SOCIAL_LABELS = {instagram: "Instagram", facebook: "Facebook", linkedin: "LinkedIn", x: "X", youtube: "YouTube"};
+function socialsHtml(l) {
+  const s = l.socials || {};
+  const keys = Object.keys(SOCIAL_LABELS).filter((k) => s[k]);
+  if (!keys.length) return "";
+  return keys.map((k) => `<a class="chip chip-link" href="${esc(s[k])}" target="_blank" rel="noopener">${SOCIAL_LABELS[k]}</a>`).join("");
+}
+function tagsHtml(l, max) {
+  const t = (l.tags || []).filter(Boolean);
+  if (!t.length) return "";
+  const shown = max ? t.slice(0, max) : t;
+  return shown.map((x) => `<span class="chip">${esc(x)}</span>`).join("") + (max && t.length > max ? ` <span class="chip chip-more">+${t.length - max} more</span>` : "");
+}
+function websiteHtml(l) {
+  if (!l.website) return "";
+  const label = l.website.replace(/^https?:\/\//, "").replace(/\/$/, "");
+  return `<a href="${esc(l.website)}" target="_blank" rel="noopener">${esc(label)}</a>`;
+}
+function factsHtml(l) {
+  const f = (l.facts || []).filter((x) => x && x.text);
+  if (!f.length) return "";
+  return `<ul class="fact-list">${f.map((x) => `<li>${esc(x.text)}${x.source ? ` <a class="fact-src" href="${esc(x.source)}" target="_blank" rel="noopener">source</a>` : ""}</li>`).join("")}</ul>`;
+}
+/* Split a call-brief string into its labeled sections. The text is shown
+   verbatim — only the labels (HOOK / ASK / FAST ANSWERS / BOOK) are pulled
+   out as headings, and the numbered questions get their own lines. */
+function briefSections(brief) {
+  if (!brief) return [];
+  const labels = ["HOOK:", "ASK:", "QUESTIONS:", "FAST ANSWERS:", "BOOK:"];
+  const hits = [];
+  labels.forEach((lab) => { let i = brief.indexOf(lab); while (i !== -1) { hits.push({i, lab}); i = brief.indexOf(lab, i + lab.length); } });
+  hits.sort((a, b) => a.i - b.i);
+  if (!hits.length) return [{label: "", text: brief.trim()}];
+  const out = [];
+  if (hits[0].i > 0) out.push({label: "", text: brief.slice(0, hits[0].i).trim()});
+  hits.forEach((h, n) => {
+    const end = n + 1 < hits.length ? hits[n + 1].i : brief.length;
+    out.push({label: h.lab.replace(":", ""), text: brief.slice(h.i + h.lab.length, end).trim()});
+  });
+  return out.filter((s) => s.text);
+}
+function briefHtml(l) {
+  const secs = briefSections(l.callBrief || "");
+  if (!secs.length) return "";
+  return secs.map((s) => {
+    // Numbered questions (1) (2) (3) each get their own line in ASK.
+    const body = (s.label === "ASK" || s.label === "QUESTIONS")
+      ? esc(s.text).replace(/ \((\d+)\) /g, "<br>($1) ")
+      : esc(s.text);
+    return s.label
+      ? `<div class="brief-sec"><div class="brief-label">${esc(s.label)}</div><div class="brief-text">${body}</div></div>`
+      : `<div class="brief-sec"><div class="brief-text">${body}</div></div>`;
+  }).join("");
+}
+function briefCardHtml(lead) {
+  const b = briefHtml(lead);
+  if (!b) return "";
+  return `<div class="card" style="margin-top:12px"><div class="section-title" style="margin-top:0">Call brief</div>${b}</div>`;
+}
+/* Full enriched profile for one lead — the Leads-tab detail card. Every
+   section is conditional: a missing field renders nothing at all. */
+function leadProfileHtml(l) {
+  const soc = socialsHtml(l);
+  const tags = tagsHtml(l);
+  const facts = factsHtml(l);
+  const brief = briefHtml(l);
+  return `
+    <div class="section-title" style="margin-top:0">${esc(l.business)}</div>
+    <div class="meta">${esc(l.niche || "")} · ${esc(l.phone)}${l.city ? " · " + esc(l.city) : ""}</div>
+    ${l.owner ? `<div class="meta">Owner: ${esc(l.owner)}</div>` : ""}
+    ${l.website ? `<div style="margin-top:10px"><div class="brief-label">Website</div>${websiteHtml(l)}</div>` : ""}
+    ${tags ? `<div style="margin-top:10px"><div class="brief-label">Tags</div><div class="chip-row">${tags}</div></div>` : ""}
+    ${soc ? `<div style="margin-top:10px"><div class="brief-label">Socials</div><div class="chip-row">${soc}</div></div>` : ""}
+    ${facts ? `<div style="margin-top:10px"><div class="brief-label">Key facts</div>${facts}</div>` : ""}
+    ${brief ? `<div style="margin-top:10px"><div class="brief-label">Call brief</div>${brief}</div>` : ""}`;
+}
+/* Lead detail modal — same overlay pattern as the delete confirm (appended
+   to document.body so a re-render can never wipe it mid-read). */
+function openLeadProfile(lead) {
+  closeLeadProfile();
+  const overlay = document.createElement("div");
+  overlay.className = "confirm-overlay";
+  overlay.id = "lead-profile";
+  overlay.innerHTML = `<div class="card confirm-card" role="dialog" aria-label="Lead profile" style="max-width:560px;width:calc(100vw - 32px);max-height:85vh;overflow-y:auto">${leadProfileHtml(lead)}
+    <div style="display:flex;justify-content:flex-end;margin-top:14px"><button class="btn" id="lead-profile-close" type="button">Close</button></div>
+  </div>`;
+  overlay.addEventListener("click", (e) => { if (e.target === overlay) closeLeadProfile(); });
+  overlay.querySelector("#lead-profile-close").onclick = () => closeLeadProfile();
+  document.body.appendChild(overlay);
+  document.addEventListener("keydown", leadProfileEscape);
+}
+function leadProfileEscape(e) { if (e.key === "Escape") closeLeadProfile(); }
+function closeLeadProfile() {
+  document.removeEventListener("keydown", leadProfileEscape);
+  const old = document.getElementById("lead-profile");
+  if (old) old.remove();
+}
+
 function renderLeads() {
   const leads = state.leads || [];
   return `
@@ -1545,10 +1620,10 @@ function renderLeads() {
     <label class="btn" style="display:inline-grid">Import CSV <input id="csv-input" type="file" accept=".csv" style="display:none"></label>
   </div>
   <div class="card"><div class="table-wrap"><table>
-    <thead><tr><th>#</th><th>Business</th><th>Niche</th><th>Phone</th><th>Owner</th><th>Email</th><th>Stage</th><th></th></tr></thead>
+    <thead><tr><th>#</th><th>Business</th><th>Niche</th><th>Phone</th><th>Owner</th><th>Email</th><th>Website</th><th>Stage</th><th></th></tr></thead>
     <tbody>${leads.map((l, i) => `<tr>
-      <td>${i + 1}</td><td><b>${esc(l.business)}</b></td><td>${esc(l.niche || "")}</td>
-      <td>${esc(l.phone)}</td><td>${esc(l.owner || "no name on file")}</td><td>${esc(l.email || "—")}</td>
+      <td>${i + 1}</td><td><b><a href="#" data-profile="${l.id}">${esc(l.business)}</a></b></td><td>${esc(l.niche || "")}</td>
+      <td>${esc(l.phone)}</td><td>${esc(l.owner || "no name on file")}</td><td>${esc(l.email || "—")}</td><td>${websiteHtml(l)}</td>
       <td>${esc(l.stage || "New")}</td>
       <td><button class="btn" data-convert="${l.id}">Convert to client</button>
       <button class="btn btn-danger" data-del="${l.id}">Delete</button></td>
@@ -1563,6 +1638,13 @@ function bindLeads() {
     if (!business || !phone) { showToast("Business name and phone are required."); return; }
     await mutate("addLead", {business, phone, niche: $("#nl-niche").value.trim(), owner: $("#nl-owner").value.trim(), email: $("#nl-email").value.trim(), city: $("#nl-city").value.trim()});
   };
+  // Business name opens the enriched profile card (website, tags,
+  // socials, owner, facts, call brief — only the fields that exist).
+  document.querySelectorAll("[data-profile]").forEach((b) => b.onclick = (e) => {
+    if (e && e.preventDefault) e.preventDefault();
+    const lead = leadById(b.dataset.profile);
+    if (lead) openLeadProfile(lead);
+  });
   const csv = $("#csv-input");
   if (csv) csv.onchange = async () => {
     const file = csv.files[0]; if (!file) return;
@@ -2510,7 +2592,7 @@ function capsCardHtml() {
   const numField = (id, label, value) => `<div class="field"><label>${esc(label)}</label><input class="input" id="${id}" type="number" min="0" step="1" value="${esc(String(value))}" ${dis}></div>`;
   return `<div class="card" id="caps-card">
     <div class="section-title" style="margin-top:0">Daily limits — team + per person, resets midnight ET</div>
-    ${capsRowsHtml()}
+    <div id="caps-rows">${capsRowsHtml()}</div>
     <div class="caps-group"><b>Team caps</b><div class="caps-form">
       ${numField("caps-team-dials", "Dials / day", tl.dials)}
       ${numField("caps-team-talk", "Talk minutes / day", tl.talkMin)}
