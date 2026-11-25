@@ -56,6 +56,7 @@ let activeConv = null;    // lead id for call-log conversation view
 let phoneSearch = "";    // live filter text for the unified Call Log list inside the iPhone mockup
 let micStream = null, micLevel = 0, micOn = false, muted = false;
 let readyOn = false;      // READY toggle state (survives re-renders; the pill is rendered from this)
+let speakerOn = false, speakerDeviceId = null; // Speaker routing (v34): output device the call was switched to, if any
 // In-app TEXT composer (2026-11-21): the TEXT button opens a composer in
 // the RIP MODE iPhone frame and sends a real SMS via POST /api/sms/send.
 // State survives re-renders in module memory; the draft is cleared only
@@ -838,6 +839,7 @@ async function endCall(how) {
   try { await loadCaps(); } catch (_) {}
   const call = activeCall;
   activeCall = null;
+  speakerOn = false; speakerDeviceId = null; // v34: speaker routing is per-call
   stopCallTimer();
   detachAnalyser();
   if ((how === "local" || how === "voicemail") && call) {
@@ -884,6 +886,40 @@ function toggleMute() {
   muted = !muted;
   if (activeCall) { try { activeCall.mute(muted); } catch (_) {} }
   syncMuteUI();
+}
+// Speaker (2026-11-25, v34): the 6th grid button — routes the call's
+// audio output through the Twilio device (voice-sdk 2.x exposes
+// device.audio.setOutputDevice). Only meaningful during a call, and
+// fully guarded: a missing/unsupported audio API just toasts, it can
+// never break dialing or an active call. Tapping again switches back
+// to the previous output device.
+async function toggleSpeaker() {
+  if (!activeCall || !twilioDevice) { showToast("Start a call first to switch audio output."); return; }
+  try {
+    const audio = twilioDevice.audio;
+    if (!audio || audio.isOutputSelectionSupported === false) { showToast("Audio output switching isn't supported in this browser."); return; }
+    const devices = audio.availableOutputDevices ? [...audio.availableOutputDevices.values()] : [];
+    if (devices.length < 2) { showToast("Only one audio output on this device — speaker is already on."); return; }
+    if (speakerOn && speakerDeviceId) {
+      await audio.setOutputDevice(speakerDeviceId);
+      speakerOn = false; speakerDeviceId = null;
+      showToast("Audio output switched back.");
+    } else {
+      const current = audio.outputDevice ? audio.outputDevice.deviceId : "default";
+      const next = devices.find((d) => d.deviceId !== current) || devices[0];
+      speakerDeviceId = current;
+      await audio.setOutputDevice(next.deviceId);
+      speakerOn = true;
+      showToast("Speaker on — audio output: " + (next.label || "alternate output") + ".");
+    }
+    syncSpeakerUI();
+  } catch (e) {
+    showToast("Could not switch audio output.");
+  }
+}
+function syncSpeakerUI() {
+  const btn = $("#speaker-btn");
+  if (btn) btn.classList.toggle("is-on", speakerOn);
 }
 function sendDigit(k) {
   if (activeCall && callState === "connected") {
@@ -1237,9 +1273,12 @@ function renderRip() {
   const last = calls[calls.length - 1];
   const s = state.sessionStats || {};
   const script = (state.scripts && state.scripts[0]) || {title: "Roofer pitch", body: "Hi, this is Roman from SFB Connect — we build AI receptionists for roofers that answer every call, book jobs, and follow up automatically. Got 60 seconds for me to show you what that looks like for your company?"};
-  // Dialer inside the iPad frame (2026-11-23, v31): the 390px iPhone
-  // frame is gone — the dialer is now an iPad panel that fills the
-  // content area (camera dot, no Dynamic Island, same iOS language).
+  // Dialer inside the iPhone 18 Pro Max frame (2026-11-25, v34): back
+  // from the v31 iPad panel (Rome: "change the rip mode ui back to
+  // iphone 18 pro max"). Largest iPhone — 440px wide, Dynamic Island,
+  // status bar, thin titanium-style bezel, large rounded corners. The
+  // interior is the same .ios-dialer (same control IDs), so bindRip /
+  // syncCallUI keep working untouched.
   // Every control ID is the same as the iPhone dialer, so bindRip /
   // syncCallUI keep working untouched. The business name is SMALL here —
   // the lead card keeps the full details (dedupe: no full-size name
@@ -1247,12 +1286,12 @@ function renderRip() {
   // iOS Phone in-call screen (2026-11-23, v28): contact name + number
   // up top with the live status/timer under it, a 3-column grid of
   // circular translucent action buttons (icon + label), the big green
-  // Call pill before dialing / red End pill during a call, and the
+  // Call circle before dialing / red End circle during a call, and the
   // READY toggle at the top next to the status text (v30). The mic bar,
   // LIVE indicator, keypad, script and TEXT composer all still live
   // inside the dialer. The dialer is a flex column — fixed header +
   // scrollable content (grid, script/keypad/SMS panels) + FIXED footer
-  // holding Call/End — so the End pill is always visible in every call
+  // holding Call/End — so the End circle is always visible in every call
   // state, no scrolling.
   const dialerInner = `
       <div class="ios-dialer">
@@ -1292,6 +1331,10 @@ function renderRip() {
           <button class="ios-action" id="text-btn" type="button"${capsSmsBlockedReason() || !clocked ? ` disabled title="${!clocked ? CLOCK_HINT : capsSmsBlockedReason()}"` : ""}>
             <span class="ios-action-circle"><svg viewBox="0 0 24 24" width="26" height="26" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M21 11.5a8.38 8.38 0 0 1-.9 3.8 8.5 8.5 0 0 1-7.6 4.7 8.38 8.38 0 0 1-3.8-.9L3 21l1.9-5.7a8.38 8.38 0 0 1-.9-3.8 8.5 8.5 0 0 1 4.7-7.6 8.38 8.38 0 0 1 3.8-.9h.5a8.48 8.48 0 0 1 8 8v.5z"/></svg></span>
             <span class="ios-action-label">Text</span>
+          </button>
+          <button class="ios-action${speakerOn ? " is-on" : ""}" id="speaker-btn" type="button">
+            <span class="ios-action-circle"><svg viewBox="0 0 24 24" width="28" height="28" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><polygon points="11 5 6 9 2 9 2 15 6 15 11 19 11 5"/><path d="M15.54 8.46a5 5 0 0 1 0 7.07"/><path d="M19.07 4.93a10 10 0 0 1 0 14.14"/></svg></span>
+            <span class="ios-action-label">Speaker</span>
           </button>
         </div>
         ${capsSmsBlockedReason() ? `<div class="error" style="margin-top:8px">${esc(capsSmsBlockedReason())}</div>` : ""}
@@ -1368,7 +1411,7 @@ function renderRip() {
       ${briefCardHtml(lead)}
     </div>
     <div class="rip-dialer-col">
-      ${ipadChrome(dialerInner, "iPad showing the dialer")}
+      ${iphoneChrome(dialerInner, {label: "iPhone showing the dialer"})}
       ${isOwner ? `
       <div class="card" style="margin-top:12px">
         <div class="section-title" style="margin-top:0">Test call — owner only</div>
@@ -1504,6 +1547,8 @@ function bindRip() {
   };
   const muteBtn = $("#mute-btn");
   if (muteBtn) muteBtn.onclick = () => toggleMute(); // in-place: never re-render mid-call
+  const speakerBtn = $("#speaker-btn");
+  if (speakerBtn) speakerBtn.onclick = () => toggleSpeaker(); // in-place: never re-render mid-call
   const keypadBtn = $("#keypad-btn");
   if (keypadBtn) keypadBtn.onclick = () => $("#keypad-box").classList.toggle("hidden");
   document.querySelectorAll(".slot").forEach((s) => { s.onclick = () => sendDigit(s.dataset.key); });
@@ -2136,6 +2181,29 @@ function latestActivityFor(leadId) {
    small camera dot in the top bezel, no Dynamic Island, slim status bar.
    Inside it runs Messages in the real iPad layout: conversation list on
    the LEFT, open thread on the RIGHT, side by side in the same frame. */
+/* ---------- iPhone 18 Pro Max frame — RIP MODE dialer (2026-11-25, v34) ----------
+   Back from the v31 iPad panel (Rome: "change the rip mode ui back to
+   iphone 18 pro max"). Largest iPhone: 440px wide, Dynamic Island,
+   status bar with time/signal/wifi/battery, thin titanium-style bezel,
+   large rounded corners, home indicator. The Call Log still uses
+   ipadChrome below — this frame is the dialer only. */
+function iphoneChrome(inner, opts) {
+  const label = (opts && opts.label) || "iPhone showing the dialer";
+  return `
+  <div class="iphone-wrap">
+    <div class="iphone" role="img" aria-label="${label}">
+      <span class="iphone-side iphone-side-l1"></span>
+      <span class="iphone-side iphone-side-l2"></span>
+      <span class="iphone-side iphone-side-r"></span>
+      <div class="iphone-screen">
+        <div class="iphone-island"></div>
+        <div class="iphone-status"><span>9:41</span><span class="iphone-status-icons"><svg width="17" height="11" viewBox="0 0 17 11" fill="#fff"><rect x="0" y="7" width="3" height="4" rx="1"/><rect x="4.5" y="5" width="3" height="6" rx="1"/><rect x="9" y="2.5" width="3" height="8.5" rx="1"/><rect x="13.5" y="0" width="3" height="11" rx="1"/></svg><svg width="16" height="11" viewBox="0 0 16 12" fill="#fff"><path d="M8 10.8a1.4 1.4 0 1 0 0-2.8 1.4 1.4 0 0 0 0 2.8zM8 6.2c1.2 0 2.3.5 3.1 1.3l-1.5 1.5A2.4 2.4 0 0 0 8 8.4c-.7 0-1.3.2-1.7.6L4.9 7.5A4.6 4.6 0 0 1 8 6.2zM8 2c2.4 0 4.6 1 6.2 2.5L12.7 6A6.4 6.4 0 0 0 8 4.2c-1.7 0-3.3.7-4.5 1.8L2 4.5A8.6 8.6 0 0 1 8 2z"/></svg><svg width="25" height="12" viewBox="0 0 25 12" fill="none"><rect x="0.5" y="0.5" width="21" height="11" rx="3.5" stroke="#fff" opacity="0.4"/><rect x="2" y="2" width="16" height="8" rx="2" fill="#fff"/><path d="M23.5 4v4a2 2 0 0 0 0-4z" fill="#fff" opacity="0.4"/></svg></span></div>
+        ${inner}
+        <div class="iphone-home"></div>
+      </div>
+    </div>
+  </div>`;
+}
 function ipadChrome(inner, label) {
   return `
   <div class="ipad-wrap">

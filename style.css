@@ -1173,6 +1173,24 @@ html:has(.shell[data-appearance="light"]) .im-avatar{background:#d9d9d9;color:#3
    centred grey system rows); with no messages the thread shows the
    honest empty state. The phone is always dark (iOS Messages dark),
    whatever the dashboard appearance toggle is set to. */
+/* iPhone 18 Pro Max frame — RIP MODE dialer (2026-11-25, v34): back from
+   the v31 iPad panel (Rome: "change the rip mode ui back to iphone 18 pro
+   max"). Largest iPhone: 440px wide, Dynamic Island, status bar with
+   time/signal/wifi/battery, thin titanium-style bezel, large rounded
+   corners, home indicator. The screen height is the true Pro Max ratio
+   (410px inner x 932/430 = 888px) on tall screens, clamped to the
+   viewport on short ones so the whole phone is visible with no
+   page-level scroll. */
+.iphone-wrap{display:flex;justify-content:center;padding:8px 0 24px}
+.iphone{position:relative;width:440px;max-width:100%;background:#0b0b0d;border:3px solid #4a4a52;border-radius:64px;padding:12px;box-sizing:border-box;box-shadow:0 0 0 2px #16161a,0 24px 60px rgba(0,0,0,.55)}
+.iphone-side{position:absolute;background:#4a4a52;border-radius:3px;z-index:2}
+.iphone-side-l1{left:-5px;top:170px;width:3px;height:30px}
+.iphone-side-l2{left:-5px;top:214px;width:3px;height:64px}
+.iphone-side-r{right:-5px;top:214px;width:3px;height:86px}
+.iphone-screen{position:relative;height:min(888px,calc(100dvh - 170px));background:#000;color:#fff;border-radius:52px;overflow:hidden;display:flex;flex-direction:column}
+.iphone-island{position:absolute;top:12px;left:50%;transform:translateX(-50%);width:126px;height:36px;background:#000;border-radius:20px;z-index:5}
+.iphone-status{display:flex;justify-content:space-between;align-items:center;padding:18px 34px 4px;font-size:15px;font-weight:600;color:#fff;flex:none}
+.iphone-home{width:134px;height:5px;border-radius:3px;background:#fff;opacity:.9;margin:10px auto 10px;flex:none}
 .iphone-status-icons{display:flex;align-items:center;gap:6px}
 .iphone-title{font-size:32px;font-weight:800;letter-spacing:-.01em;color:#fff;padding:2px 20px 0;flex:none}
 .iphone-body{flex:1;min-height:0;overflow-y:auto;padding:6px 0 12px}
@@ -1294,6 +1312,7 @@ html:has(.shell[data-appearance="light"]) .iphone-head-name b{color:#fff}
 
 /* ---------- RIP density + compact caps ---------- */
 .rip-grid{align-items:start}
+@media(max-width:1100px){.rip-grid{grid-template-columns:1fr}}
 .rip-compact .card{padding:12px}
 .caps-strip-compact{padding:10px 12px}
 .caps-strip-compact .caps-grid{display:grid;grid-template-columns:repeat(4,1fr);gap:8px}
@@ -1744,53 +1763,54 @@ html:has(.shell[data-appearance="light"]) .db-sample-tag{background:rgba(180,130
    3-column grid of circular translucent action buttons, the big green
    Call circle / red End circle. All control IDs are unchanged; only the
    look changed. The phone stays dark in both dashboard themes. */
-/* ---------- iPad dialer (RIP MODE, v31) ----------
-   The dialer moved from the 390px iPhone frame to an iPad panel that
-   fills the content area (2026-11-23 — Rome: "its so compact for no
-   reason resize everything so its better or make it an ipad"). Same
-   iOS visual language, same control IDs — only the canvas is bigger:
-   contact name/number large at the top, roomy action circles, large
-   keypad keys, and the Call/End control is now the real iOS pill — a
-   wide rounded rectangle (green CALL idle, red END in a call) — instead
-   of the phone's circle. The flex structure is unchanged (fixed header
-   + scrollable content + FIXED footer), so the End pill is always
+/* ---------- iPhone 18 Pro Max dialer (RIP MODE, v34) ----------
+   Back from the v31 iPad panel to the iPhone frame (2026-11-25 — Rome:
+   "change the rip mode ui back to iphone 18 pro max"), scaled up to
+   the largest iPhone: 440px wide, so it fills the space and never
+   feels compact. Same control IDs — only the frame and the sizing
+   changed: contact name/number at the top, a full 2x3 grid of circular
+   action buttons, large keypad keys, and the Call/End control is the
+   phone's circle again (green CALL idle, red END in a call) instead of
+   the iPad's pill. The flex structure is unchanged (fixed header +
+   scrollable content + FIXED footer), so the End circle is always
    visible, never clipped, never scrolled away. */
-.ios-dialer{display:flex;flex-direction:column;flex:1;min-height:0;gap:0;padding:28px 28px 0}
+.ios-dialer{display:flex;flex-direction:column;flex:1;min-height:0;gap:0;padding:20px 24px 0}
 .ios-head{flex:none}
 .ios-ready-row{display:flex;align-items:center;gap:10px;margin-top:12px}
 .ios-ready-row .ios-status{margin-top:0;flex:1;min-width:0}
-.ios-ready-toggle{flex:none;border:0;border-radius:999px;background:rgba(255,255,255,.14);color:#fff;font:inherit;font-size:15px;font-weight:600;padding:9px 16px;cursor:pointer}
+.ios-ready-toggle{flex:none;border:0;border-radius:999px;background:rgba(255,255,255,.14);color:#fff;font:inherit;font-size:14px;font-weight:600;padding:8px 14px;cursor:pointer}
 .ios-ready-toggle.on{background:#fff;color:#000}
 .ios-scroll{flex:1;min-height:0;overflow-y:auto;padding-bottom:12px}
-.ios-footer{flex:none;padding:18px 0 20px;border-top:1px solid rgba(255,255,255,.08);display:flex;flex-direction:column;align-items:center}
+.ios-footer{flex:none;padding:16px 0 18px;border-top:1px solid rgba(255,255,255,.08);display:flex;flex-direction:column;align-items:center}
 .ios-footer .ios-end{margin:0}
 .ios-contact{text-align:center;padding:8px 0 2px}
-.ios-name{font-size:40px;font-weight:700;color:#fff;letter-spacing:-.01em;line-height:1.15}
-.ios-number{font-size:20px;color:#98989d;margin-top:6px}
-.ios-status{font-size:18px;color:#98989d;margin-top:12px;min-height:24px}
-.ios-microw{display:flex;align-items:center;gap:10px;margin-top:18px}
+.ios-name{font-size:34px;font-weight:700;color:#fff;letter-spacing:-.01em;line-height:1.15}
+.ios-number{font-size:18px;color:#98989d;margin-top:6px}
+.ios-status{font-size:17px;color:#98989d;margin-top:12px;min-height:24px}
+.ios-microw{display:flex;align-items:center;gap:10px;margin-top:14px}
 .ios-microw .mic-bar{flex:1}
 .ios-microw .pill{flex:none}
-.ios-grid{display:grid;grid-template-columns:repeat(3,1fr);gap:24px 12px;justify-items:center;margin:32px 0 8px}
+.ios-grid{display:grid;grid-template-columns:repeat(3,1fr);gap:20px 10px;justify-items:center;margin:28px 0 6px}
 .ios-action{display:flex;flex-direction:column;align-items:center;gap:8px;background:transparent;border:0;padding:0;cursor:pointer;color:#fff;font:inherit}
 .ios-action:disabled{opacity:.35;cursor:default}
-.ios-action-circle{width:96px;height:96px;border-radius:50%;background:rgba(255,255,255,.14);display:flex;align-items:center;justify-content:center;color:#fff;position:relative}
-.ios-action-circle svg{width:38px;height:38px}
-.ios-action-label{font-size:16px;color:#fff}
+.ios-action-circle{width:78px;height:78px;border-radius:50%;background:rgba(255,255,255,.14);display:flex;align-items:center;justify-content:center;color:#fff;position:relative}
+.ios-action-circle svg{width:28px;height:28px}
+.ios-action-label{font-size:14px;color:#fff}
 .ios-mute-slash{display:none;position:absolute;inset:0;margin:auto}
 .ios-action.is-muted .ios-action-circle{background:#fff;color:#000}
+.ios-action.is-on .ios-action-circle{background:#fff;color:#000}
 .ios-action.is-muted .ios-mute-slash{display:block}
-/* The Call/End control is the real iOS pill: a wide rounded rectangle,
-   green while idle (CALL), red in a call (END CALL), white phone icon +
-   label inline. Same #call-btn id and .end class — syncCallUI is
-   untouched. */
-.ios-end{display:flex;flex-direction:row;align-items:center;justify-content:center;gap:14px;background:#30d158;border:0;border-radius:999px;width:min(340px,92%);height:68px;margin:0 auto;padding:0;cursor:pointer;color:#fff;font:inherit}
+/* The Call/End control is the real iPhone circle (v34 — back from the
+   v31 iPad pill): a green circle while idle (CALL), red in a call
+   (END CALL), white phone icon rotated when ending. Same #call-btn id
+   and .end class — syncCallUI is untouched. */
+.ios-end{display:flex;flex-direction:column;align-items:center;gap:8px;background:transparent;border:0;padding:0;margin:0;cursor:pointer;color:#fff;font:inherit}
 .ios-end:disabled{opacity:.5;cursor:default}
-.ios-end-circle{width:auto;height:auto;border-radius:0;background:transparent;display:flex;align-items:center;justify-content:center;color:#fff}
-.ios-end-circle svg{width:32px;height:32px}
-.ios-end.end{background:#ff3b30}
+.ios-end-circle{width:84px;height:84px;border-radius:50%;background:#30d158;display:flex;align-items:center;justify-content:center;color:#fff}
+.ios-end-circle svg{width:34px;height:34px}
+.ios-end.end .ios-end-circle{background:#ff3b30}
 .ios-end.end .ios-end-circle svg{transform:rotate(135deg)}
-.ios-end-label{font-size:19px;font-weight:600;color:#fff}
+.ios-end-label{font-size:15px;font-weight:600;color:#fff}
 /* v30 (2026-11-23): the v29 sticky rule is REMOVED — it could never work.
    The phone screen clips overflow and nothing inside it scrolled, so
    sticky had no scrolling ancestor: the red End button sat below the
@@ -1810,9 +1830,9 @@ html:has(.shell[data-appearance="light"]) .db-sample-tag{background:rgba(180,130
 .fact-list li{margin-bottom:4px}
 .fact-src{font-size:12px;color:var(--green,#34d399)}
 .rip-online{margin-top:10px;padding-top:10px;border-top:1px solid var(--line,#232326);font-size:13px}
-#keypad-box .slots{display:grid;grid-template-columns:repeat(3,88px);gap:12px;justify-content:center;margin:12px 0}
-#keypad-box .slot{width:88px;height:88px;border-radius:50%;border:0;background:rgba(255,255,255,.14);color:#fff;padding:0;display:flex;flex-direction:column;align-items:center;justify-content:center;cursor:pointer}
-#keypad-box .slot .slot-digit{font-size:34px;font-weight:400;line-height:1}
+#keypad-box .slots{display:grid;grid-template-columns:repeat(3,80px);gap:12px;justify-content:center;margin:12px 0}
+#keypad-box .slot{width:80px;height:80px;border-radius:50%;border:0;background:rgba(255,255,255,.14);color:#fff;padding:0;display:flex;flex-direction:column;align-items:center;justify-content:center;cursor:pointer}
+#keypad-box .slot .slot-digit{font-size:32px;font-weight:400;line-height:1}
 #keypad-box .slot .slot-letters{font-size:11px;letter-spacing:.14em;color:#c7c7cc;margin-top:2px}
 
 /* ---------- v30 (2026-11-23) — real-mode Dashboard mirrors sample mode ----------
